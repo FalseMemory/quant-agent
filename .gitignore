@@ -1,0 +1,26 @@
+# Local secrets and runtime state
+data_cache/ai_config.json
+data_cache/quant_agent.db
+strategy_settings.json
+holdings.json
+watchlist.json
+_summary_ref.json
+
+# Generated runtime/cache files
+data_cache/*.csv
+*.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environments
+.venv/
+venv/
+.env
+.env.*
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

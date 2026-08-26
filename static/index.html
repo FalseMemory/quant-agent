@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quant Agent · 中低频量化面板</title>
+<script src="/static/chart.umd.js"></script>
+<style>
+  :root {
+    --bg: #161618; --panel: #1e1e21; --card: #242428; --line: #333338;
+    --txt: #e6e4dc; --muted: #9a9890; --dim: #6b6963;
+    --red: #e05252; --green: #35b881; --amber: #efa32b; --blue: #5b8fd9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--txt); font: 14px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif; padding: 20px clamp(12px, 4vw, 40px); }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+  h1 { font-size: 19px; font-weight: 600; letter-spacing: .5px; }
+  .sub { color: var(--muted); font-size: 12.5px; }
+  .spacer { flex: 1; }
+  button { background: transparent; border: 1px solid var(--line); color: var(--txt); border-radius: 7px; padding: 6px 14px; font-size: 13px; cursor: pointer; transition: border-color .15s, background .15s; }
+  button:hover { border-color: var(--dim); background: #26262b; }
+  button.primary { border-color: var(--blue); color: var(--blue); }
+  section.strategy, section.plansec { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; margin-bottom: 22px; }
+  .shead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+  .shead h2 { font-size: 16px; font-weight: 600; }
+  .chip { font-size: 12px; padding: 2px 10px; border-radius: 20px; border: 1px solid var(--line); color: var(--muted); }
+  .chip.up { color: var(--red); border-color: rgba(224,82,82,.4); }
+  .chip.down { color: var(--green); border-color: rgba(53,184,129,.4); }
+  .chip.warn { color: var(--amber); border-color: rgba(239,163,43,.4); }
+  .chip.info { color: var(--blue); border-color: rgba(91,143,217,.4); }
+  .tabs { display: flex; gap: 6px; margin: 12px 0 14px; flex-wrap: wrap; }
+  .tabs button { padding: 4px 12px; font-size: 12.5px; border-radius: 6px; }
+  .tabs button.on { background: #2c2c33; border-color: var(--blue); color: var(--blue); }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .m { background: var(--card); border-radius: 9px; padding: 12px 14px; }
+  .m .k { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+  .m .v { font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .m .s { font-size: 11.5px; color: var(--dim); margin-top: 2px; }
+  .pos { color: var(--red); } .neg { color: var(--green); } .flat { color: var(--txt); }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .charts { grid-template-columns: 1fr; } }
+  .chartbox { background: var(--card); border-radius: 9px; padding: 12px; position: relative; height: 300px; }
+  .chartbox h3 { font-size: 12.5px; font-weight: 500; color: var(--muted); position: absolute; top: 10px; left: 14px; z-index: 2; }
+  .side { display: grid; grid-template-columns: 1fr 320px; gap: 16px; margin-top: 16px; }
+  @media (max-width: 900px) { .side { grid-template-columns: 1fr; } }
+  .panelbox { background: var(--card); border-radius: 9px; padding: 14px 16px; }
+  .panelbox h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: var(--txt); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 5px 8px; border-bottom: 1px solid #2a2a2f; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .kv { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 13px; }
+  .kv .k { color: var(--muted); }
+  /* plan cards */
+  .plangrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .plancard { background: var(--card); border-radius: 10px; padding: 14px 16px; border-top: 3px solid var(--blue); }
+  .plancard.trade { border-top-color: var(--amber); }
+  .pc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .pc-head b { font-size: 14.5px; }
+  .pc-title { font-size: 13px; color: var(--blue); margin-bottom: 6px; font-weight: 600; }
+  .pc-rationale { font-size: 12px; color: var(--muted); margin: 8px 0 10px; line-height: 1.55; }
+  .act { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 7px; background: #1c1c20; margin-bottom: 6px; font-size: 13px; }
+  .act .badge { font-size: 11.5px; padding: 1px 8px; border-radius: 4px; white-space: nowrap; }
+  .act.buy .badge { color: var(--red); background: rgba(224,82,82,.15); }
+  .act.sell .badge { color: var(--green); background: rgba(53,184,129,.15); }
+  .act.hold .badge { color: var(--muted); background: rgba(255,255,255,.06); }
+  .holdings-edit { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  .hrow { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .hrow label { flex: 1; color: var(--muted); }
+  .hrow input { width: 70px; background: var(--bg); border: 1px solid var(--line); color: var(--txt); border-radius: 6px; padding: 3px 8px; font-size: 12.5px; text-align: right; }
+  /* plan market tabs */
+  .plan-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 4px; }
+  .ptab { padding: 7px 22px; font-size: 13px; border-radius: 8px; background: var(--card); }
+  .ptab.on { border-color: var(--blue); color: var(--blue); background: #2c2c33; }
+  .ptab .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); margin-left: 6px; vertical-align: 1px; }
+  .tblwrap { overflow-x: auto; margin: 2px 0 10px; }
+  @media (max-width: 640px) { .ptab { flex: 1 1 30%; text-align: center; padding: 9px 6px; } }
+  /* strategy docs */
+  .doc-btn { padding: 3px 13px; font-size: 12px; border-radius: 6px; background: var(--card); }
+  .doc-btn::after { content: " ▾"; }
+  .doc-btn.on { border-color: var(--blue); color: var(--blue); background: #2c2c33; }
+  .doc-btn.on::after { content: " ▴"; }
+  .strategy-doc { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .32s ease; }
+  .strategy-doc.open { grid-template-rows: 1fr; }
+  .strategy-doc > .doc-inner { overflow: hidden; min-height: 0; }
+  .doc-box { background: var(--card); border-radius: 9px; padding: 16px 18px; margin-top: 12px; }
+  .doc-box h4 { font-size: 13px; font-weight: 600; color: var(--blue); margin: 14px 0 6px; }
+  .doc-box h4:first-child { margin-top: 0; }
+  .doc-box p { font-size: 12.8px; line-height: 1.75; margin-bottom: 6px; }
+  .doc-box ul { padding-left: 18px; font-size: 12.8px; line-height: 1.75; }
+  .doc-box li { margin-bottom: 4px; }
+  .doc-box b { color: var(--amber); font-weight: 500; }
+  .doc-box code { font-family: Consolas, monospace; font-size: 12px; color: var(--green); background: #1a1a1e; border-radius: 4px; padding: 1px 6px; }
+  .doc-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
+  @media (max-width: 900px) { .doc-cols { grid-template-columns: 1fr; } }
+  .params { display: flex; gap: 14px; align-items: end; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+  .params label { display: block; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+  .params input { width: 90px; background: var(--bg); border: 1px solid var(--line); color: var(--txt); border-radius: 6px; padding: 5px 8px; font-size: 13px; }
+  #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #2c2c33; border: 1px solid var(--line); color: var(--txt); padding: 8px 18px; border-radius: 8px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 99; }
+  #toast.show { opacity: 1; }
+  /* AI decision section */
+  .ai-settings { display: flex; gap: 14px; flex-wrap: wrap; align-items: end; margin: 12px 0 4px; padding: 12px 14px; background: var(--card); border-radius: 9px; }
+  .ai-settings label { display: block; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+  .ai-settings input, .ai-settings select { background: var(--bg); border: 1px solid var(--line); color: var(--txt); border-radius: 6px; padding: 5px 8px; font-size: 13px; }
+  .ai-bar { display: flex; align-items: center; gap: 14px; margin: 12px 0 4px; flex-wrap: wrap; }
+  .profile-chips { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+  .pchip { cursor: pointer; padding: 3px 11px; border: 1px solid var(--line); border-radius: 12px; font-size: 12.5px; color: var(--muted); user-select: none; }
+  .pchip:hover { color: var(--txt); }
+  .pchip.on { background: #2f6fde; color: #fff; border-color: transparent; }
+  .ai-pm { width: 100%; }
+  .pm-head { display: flex; align-items: center; gap: 10px; width: 100%; }
+  .pm-table { width: 100%; font-size: 12.5px; border-collapse: collapse; margin-top: 8px; }
+  .pm-table th, .pm-table td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .ai-profile-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; width: 100%; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  .ai-error { margin-top: 10px; padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(224,82,82,.45); color: var(--red); background: rgba(224,82,82,.08); font-size: 13px; line-height: 1.55; }
+  .ai-headline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 14px 0 8px; font-size: 13px; color: var(--muted); }
+  .ai-mv { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .ai-mv .m { font-size: 12.5px; line-height: 1.55; }
+  .decwrap { background: var(--card); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; border-left: 3px solid var(--blue); }
+  .decwrap.trade { border-left-color: var(--amber); }
+  .dw-title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; font-weight: 600; font-size: 14px; }
+  .dw-price { font-size: 12px; color: var(--gold); margin-top: 5px; line-height: 1.5; }
+  .dw-reason { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+  .dev-badge { font-size: 11px; color: var(--amber); border: 1px solid rgba(239,163,43,.4); padding: 0 7px; border-radius: 4px; white-space: nowrap; }
+  .ai-risk { margin-top: 4px; padding: 10px 14px; background: var(--card); border-radius: 9px; font-size: 12.5px; color: var(--amber); line-height: 1.55; }
+  .ai-warns { margin-top: 10px; padding: 8px 14px; background: rgba(239,163,43,.07); border: 1px dashed rgba(239,163,43,.35); border-radius: 8px; font-size: 12px; color: var(--amber); line-height: 1.7; }
+  .ai-hist { margin-top: 14px; }
+  .ai-hist summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  footer { color: var(--dim); font-size: 11.5px; text-align: center; margin: 26px 0 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Quant Agent</h1>
+  <span class="sub">日级双市策略 · 波动红利 × 周期红利 · 美股 / A股 / 港股 · 上班族友好，无需盯盘</span>
+  <div class="spacer"></div>
+  <span class="sub" id="updated"></span>
+  <button onclick="loadData(true)">刷新数据</button>
+  <button class="primary" onclick="genReview()">生成复盘文本</button>
+</header>
+
+<section class="plansec">
+  <div class="shead"><h2>交易计划</h2><span class="sub">按各市场时段自动切换：未开盘/盘中 → 今日计划；已闭盘 → 下一交易日计划</span></div>
+  <div class="plan-tabs" id="planTabs"></div>
+  <div id="planPanels"><div class="sub">加载中…</div></div>
+</section>
+
+<section class="plansec" id="wlSec">
+  <div class="shead">
+    <h2>自选观察</h2>
+    <span class="sub">自定义股票/ETF 会进入 AI 的 WATCH 分析池，可结合你的持仓给出买入、持有、减仓或卖出判断</span>
+  </div>
+  <div class="ai-settings">
+    <div><label>代码</label><input id="wl_code" placeholder="如 NVDA、159915、600519、0700" style="width:220px"></div>
+    <div><label>市场</label><select id="wl_market">
+      <option value="auto">自动识别</option>
+      <option value="a">A股</option>
+      <option value="us">美股</option>
+      <option value="hk">港股</option>
+    </select></div>
+    <button class="primary" onclick="addWatch()">添加自选</button>
+    <span class="sub" style="align-self:end">A股 6 位代码按首位自动加 sh/sz；指数建议直接写 sh000300 形式；港股写 0700 或 0700.HK 均可</span>
+  </div>
+  <div id="wlBody"><span class="sub">加载中…</span></div>
+  <div class="sub" style="margin-top:8px">已持仓自选 ETF/股票：请在下表“持仓%”填写相对该自选账户的仓位，AI 会据此判断何时减仓或卖出。</div>
+</section>
+
+<section class="plansec" id="aiSec">
+  <div class="shead">
+    <h2>AI 交易指令</h2>
+    <span class="chip" id="aiChip">检查配置…</span>
+    <span class="sub">大模型综合 持仓 + 技术快照 + 规则基线 + 最新新闻 → 结构化指令（人工确认后手动执行）</span>
+    <div class="spacer"></div>
+    <button onclick="toggleAiSettings()">设置</button>
+  </div>
+  <div id="aiSettings" class="ai-settings" hidden>
+    <div class="ai-pm">
+      <div class="pm-head">
+        <b>模型配置管理</b>
+        <span class="sub">每个配置归属一个配置组；生成指令时按组勾选，组内全部模型会依次分析</span>
+        <div class="spacer"></div>
+        <button class="primary" style="padding:4px 14px" onclick="startAddProfile()">＋ 新增模型配置</button>
+      </div>
+      <table class="pm-table">
+        <thead><tr><th>配置名称</th><th>配置组</th><th>模型名</th><th>Base URL</th><th>操作</th></tr></thead>
+        <tbody id="ai_pm_body"><tr><td colspan="5" class="sub">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="ai-profile-form" id="aiProfileForm" hidden>
+      <div><label>配置名称</label><input id="ai_profile" placeholder="例如：稳健模型" style="width:140px"></div>
+      <div><label>配置组</label><input id="ai_group" list="ai_groups" placeholder="例如：稳健组" style="width:120px"><datalist id="ai_groups"></datalist></div>
+      <div><label>API Base URL（OpenAI 兼容格式）</label><input id="ai_base" placeholder="https://api.deepseek.com/v1" style="width:250px"></div>
+      <div><label>模型名</label><input id="ai_model" placeholder="deepseek-chat" style="width:150px"></div>
+      <div><label>API Key（留空=沿用已存 Key）</label><input id="ai_key" type="password" placeholder="sk-..." style="width:190px"></div>
+      <button class="primary" onclick="saveAiConfig()">保存配置</button>
+      <button onclick="cancelEditProfile()">取消编辑</button>
+      <span class="sub" id="aiTestResult" style="align-self:center"></span>
+      <button onclick="testAi()">测试连接（当前默认配置）</button>
+      <span class="sub" id="aiKeyHint" style="align-self:center">兼容 DeepSeek / Kimi / GLM / OpenRouter 等任意 OpenAI 格式接口；思考型模型（deepseek-reasoner 等）易空响应，建议用非思考型</span>
+    </div>
+    <div class="ai-views"><label>分析视角</label><label><input type="checkbox" class="ai-view" value="trend" checked>趋势与技术</label><label><input type="checkbox" class="ai-view" value="risk" checked>持仓与风控</label><label><input type="checkbox" class="ai-view" value="news" checked>新闻与事件</label><label><input type="checkbox" class="ai-view" value="valuation" checked>估值与基本面</label><label><input type="checkbox" class="ai-view" value="contrarian" checked>反向审查</label></div>
+  </div>
+  <div class="ai-bar">
+    <span style="font-size:13px;color:var(--muted)">分析市场</span>
+    <label><input type="checkbox" class="ai-market" value="US" checked> 美股</label>
+    <label><input type="checkbox" class="ai-market" value="CN" checked> A股</label>
+    <label><input type="checkbox" class="ai-market" value="HK" checked> 港股</label>
+    <span style="font-size:13px;color:var(--muted)">数据源</span>
+    <select id="ai_data_source"><option value="auto">自动路由</option><option value="yahoo">Yahoo Finance</option><option value="sina">新浪财经</option></select>
+    <span style="font-size:13px;color:var(--muted)">新闻</span>
+    <select id="ai_news_source"><option value="sina">新浪财经</option><option value="auto">自动路由</option></select>
+    <span style="font-size:13px;color:var(--muted)">模型组</span>
+    <span id="aiProfileChips" class="profile-chips"><span class="sub">加载中…</span></span>
+    <button class="primary" id="aiGoBtn" onclick="runDecide()">生成交易指令</button>
+    <span class="sub" id="aiBarNote">勾选一个或多个配置组，组内全部模型依次分析（共用同一份行情上下文）；不勾选则用默认模型。模型的增删改在「设置」里</span>
+  </div>
+  <div id="aiError" class="ai-error" hidden></div>
+  <div id="aiResult"></div>
+  <details id="aiHistBox" class="ai-hist">
+    <summary>历史决策记录（每次生成都留档，便于事后验证）</summary>
+    <div id="aiHistory" style="margin-top:8px"><span class="sub">暂无记录</span></div>
+  </details>
+</section>
+
+<section class="strategy" id="secA">
+  <div class="shead">
+    <h2>A · 波动红利 — TQQQ 波动率目标 + 趋势闸门</h2>
+    <span class="chip" id="chipA">加载中…</span>
+    <span class="sub">美股 · 日级信号次日执行</span>
+    <button class="doc-btn" id="docBtnA" onclick="toggleDoc('A')">策略详解</button>
+  </div>
+  <div class="strategy-doc" id="docA"><div class="doc-inner"><div class="doc-box">
+    <h4>一、为什么选这个标的</h4>
+    <p>TQQQ 是<strong>纳指100 三倍杠杆 ETF</strong>：纳指长期趋势向上，但三倍杠杆在剧烈波动中会产生"波动损耗"——涨跌同样的幅度，高波动路径下复利反而受损。本策略赚的就是<b>波动率溢价</b>：用信号源 QQQ（一倍、无杠杆）的 20 日实现波动率动态控制 TQQQ 的仓位，<b>市场平静时放大杠杆吃趋势，市场狂躁时自动降杠杆躲损耗</b>。趋势方向由 SMA200 闸门判断，牛熊分界之上才允许持仓。</p>
+    <h4>二、买入条件与触发时机</h4>
+    <ul>
+      <li><b>前提：趋势闸门开启</b> —— QQQ 收盘价站在 200 日均线上方；跌破则无论波动多低都不持仓；</li>
+      <li><b>目标仓位公式</b>：<code>仓位 = min(100%, 35% ÷ 实现波动率)</code>。实现波动为最近 20 日日收益率标准差年化。举例：年化波动 17.5% → 满仓 100%；35% → 半仓 50%；达到 70% 以上 → 自动空仓；</li>
+      <li><b>执行节奏</b>：每日收盘计算一次信号，次日开盘附近按目标仓位调整即可，无需盯盘；</li>
+      <li><b>防磨损机制（滞回带）</b>：目标仓位变化不足 <code>10 个百分点</code>时不动作，避免频繁小额调仓产生摩擦成本。</li>
+    </ul>
+    <h4>三、卖出规则</h4>
+    <ul>
+      <li><b>趋势失效退出（核心止损）</b>：QQQ 收盘跌破 SMA200 → 闸门关闭，强制清仓全部 TQQQ，直至重新站上均线；</li>
+      <li><b>波动退出（等效止损）</b>：实现波动升到 70% 年化以上时目标权重归零，自动退出——不需要人为设定止损线，波动本身会把你带出危险区；</li>
+      <li><b>无固定止盈</b>：只要"闸门开 + 低波动"两个条件持续成立就一直持有；上涨途中波动抬升会使权重逐步回落，相当于<b>越涨越自动锁定利润</b>；</li>
+      <li>卖出后的资金以现金形式等待下一次买入条件成立。</li>
+    </ul>
+    <h4>四、页面指标怎么读</h4>
+    <div class="doc-cols">
+      <ul>
+        <li><b>标题旁状态 chip</b>：「仓位 X% · 波动 Y% · 闸门开/关」是当前最新信号一览；仓位 ≥60% 标红、≤5% 标绿、中间为黄；</li>
+        <li><b>策略收益 / 基准</b>：基准是<b>同期 TQQQ 买入持有</b>。"跑赢 ✓"说明择时与控波动带来了超额收益；</li>
+        <li><b>策略年化（CAGR）</b>：几何平均年化增速，跨窗口对比时看它比看总收益更公平；</li>
+      </ul>
+      <ul>
+        <li><b>最大回撤</b>：净值从峰值到谷底的最大跌幅，衡量最痛时刻；策略应显著小于基准；</li>
+        <li><b>Sharpe</b>：每承受 1 单位波动换来多少收益，长期 &gt;1 属优秀；</li>
+        <li><b>净值曲线</b>：红线=策略、灰线=基准，起点都归一为 1；下方回撤图越浅越好；</li>
+        <li><b>窗口切换</b>：全历史 / 近3年 / 近1年 / 2026-06以来 四个观察期；参数区可改波动率目标与 SMA 窗口重跑回测。</li>
+      </ul>
+    </div>
+  </div></div></div>
+  <div class="tabs" id="tabsA"></div>
+  <div id="bodyA"></div>
+  <div class="params">
+    <div><label>波动率目标 (年化)</label><input id="pA_tv" type="number" min="0.05" max="1.50" step="0.01" value="0.35"></div>
+    <div><label>趋势闸门 SMA</label><input id="pA_tw" type="number" min="20" max="500" step="1" value="200"></div>
+    <button onclick="rerun('A')">应用并重跑</button>
+  </div>
+</section>
+
+<section class="strategy" id="secB">
+  <div class="shead">
+    <h2>B · 周期红利 — A股周度动量轮动</h2>
+    <span class="chip" id="chipB">加载中…</span>
+    <span class="sub">创业板指 / 沪深300 / 上证红利 / 国债ETF</span>
+    <button class="doc-btn" id="docBtnB" onclick="toggleDoc('B')">策略详解</button>
+  </div>
+  <div class="strategy-doc" id="docB"><div class="doc-inner"><div class="doc-box">
+    <h4>一、为什么选这四个标的</h4>
+    <p>A股的典型特征是<b>风格周期轮动</b>：成长与价值、大盘与小盘的领涨期交替出现，没有哪类资产能一直赢。候选池因此覆盖三种互补风格——<b>创业板指（159915，周期成长）</b>利率敏感、弹性最大；<b>沪深300（510300，大盘核心）</b>；<b>上证红利（510880，红利价值）</b>低估值高股息、跌市里相对抗揍。第四只<b>国债ETF（511010）</b>不是候选而是"避风港"：所有风险资产都走坏时的去处。全部用指数 ETF，规避个股暴雷与退市风险。</p>
+    <h4>二、买入条件与触发时机</h4>
+    <ul>
+      <li><b>决策时点固定</b>：每周<b>最后一个交易日收盘后</b>计算一次信号，次日执行；一周只动一次，其余时间不盯盘；</li>
+      <li><b>打分规则</b>：<code>分数 = 60日涨幅 ÷ 60日日波动 × √252</code>，即<b>风险调整后动量</b>——涨得多的未必入选，还要涨得"稳"；</li>
+      <li><b>入围门槛</b>：只有收盘价站上 <code>40 日均线</code>的指数才有候选资格（绝对趋势过滤）；</li>
+      <li><b>买入动作</b>：在入围者中选分数最高的一只，<b>全仓</b>其对应 ETF；三只全部不合格则不买任何风险资产（见下方卖出规则）。</li>
+    </ul>
+    <h4>三、卖出规则</h4>
+    <ul>
+      <li><b>系统性防御退出</b>：创业板指、沪深300、上证红利<b>全部跌破 40 日均线</b>（或无有效候选）→ 卖出所持 ETF，整仓转入国债 ETF 避险。这是策略的全局止损：市场进入系统性下跌时你手里拿的是债；</li>
+      <li><b>轮动换仓</b>：持仓标的被分数更高的候选替代 → 换到新最优。换手成本按 <code>15bp/次</code>计入回测，收益是扣费后的真实水平；</li>
+      <li><b>无固定止盈止损百分比</b>：动量衰减会自然表现为分数落后，由轮动机制自动完成"止盈换仓"，避免人为情绪干扰；</li>
+      <li>注意决策只在每周五（或该周最后交易日）收盘生成，盘中涨跌不影响本周持仓。</li>
+    </ul>
+    <h4>四、页面指标怎么读</h4>
+    <div class="doc-cols">
+      <ul>
+        <li><b>标题旁状态 chip</b>：「持有 XX (ETF代码)」即本周持仓；</li>
+        <li><b>策略收益 / 基准</b>：B 的基准是<b>沪深300 买入持有</b>——衡量轮动是否比"躺平大盘"更强；</li>
+        <li><b>年化 / 最大回撤 / Sharpe</b>：口径与 A/C 一致；防御机制应主要体现在回撤显著小于基准；</li>
+      </ul>
+      <ul>
+        <li><b>近期轮动记录表</b>：最近 12 次周度决策的日期、选中资产与原因（"动量最优且在均线上方"/"转入防御"），可核对换仓节奏；</li>
+        <li><b>本周持仓面板</b>：选中资产、对应 ETF、入选原因、决策日；</li>
+        <li><b>参数区</b>：动量窗口（默认60日）与均线闸门（默认40日）可调并重跑回测；窗口切换同 A/C 四档。</li>
+      </ul>
+    </div>
+  </div></div></div>
+  <div class="tabs" id="tabsB"></div>
+  <div id="bodyB"></div>
+  <div class="params">
+    <div><label>动量窗口 (日)</label><input id="pB_mom" value="60"></div>
+    <div><label>均线闸门 (日)</label><input id="pB_ma" value="40"></div>
+    <button onclick="rerun('B')">应用并重跑</button>
+    <span class="sub">每周最后交易日收盘决策，次日执行；成本 15bp/换手</span>
+  </div>
+</section>
+
+<section class="strategy" id="secC">
+  <div class="shead">
+    <h2>C · 波动红利 — 恒指2x (7200.HK) 波动率目标 + 趋势闸门</h2>
+    <span class="chip" id="chipC">加载中…</span>
+    <span class="sub">港股 · 信号源与基准 2800.HK 盈富基金</span>
+    <button class="doc-btn" id="docBtnC" onclick="toggleDoc('C')">策略详解</button>
+  </div>
+  <div class="strategy-doc" id="docC"><div class="doc-inner"><div class="doc-box">
+    <h4>一、为什么选这个标的</h4>
+    <p>与策略 A 同一套"波动率溢价"框架，移植到港股：<b>7200.HK（南方两倍恒指 ETF）</b>提供两倍杠杆敞口，<b>2800.HK（盈富基金，恒指一倍）</b>作为信号源与业绩基准。用一倍指数而非杠杆品本身来计算波动率和趋势，是因为它的历史更长、价格更"干净"，信号更稳定；基准选 2800.HK 则回答一个朴素问题——"折腾一圈有没有比直接买盈富基金更强"。恒指长期波动高于纳指，所以目标波动放宽到 <code>40%</code>（A 是 35%），避免频繁触发空仓。</p>
+    <h4>二、买入条件与触发时机</h4>
+    <ul>
+      <li><b>前提：趋势闸门开启</b> —— 恒指（2800.HK 口径）收盘价在 200 日均线上方；</li>
+      <li><b>目标仓位公式</b>：<code>仓位 = min(100%, 40% ÷ 实现波动率)</code>（20 日实现波动年化）。波动 20% → 满仓；40% → 半仓；80% 以上 → 空仓；</li>
+      <li><b>执行节奏</b>：日级信号次日执行；仓位变化不足 <code>10 个百分点</code>不动手（滞回带防磨损），与 A 相同；</li>
+      <li><b>交易时段提示</b>：港股中午不休市但分上下两节，计划页会按港交所时段显示盘中/闭盘状态。</li>
+    </ul>
+    <h4>三、卖出规则</h4>
+    <ul>
+      <li><b>趋势失效退出（核心止损）</b>：恒指收盘跌破 SMA200 → 清仓 7200.HK，直至重新站上；</li>
+      <li><b>波动退出（等效止损）</b>：实现波动升至 80% 年化以上时目标权重归零自动离场；</li>
+      <li><b>无固定止盈</b>：条件持续成立即持有，波动抬升时权重自动回落锁利；</li>
+      <li><b>港股特有注意</b>：无涨跌停限制，极端行情波动可能一步到位——这也是本策略用每日信号而非周信号的原因之一；ETF 按<b>每手手数</b>交易，实际执行请按手数取整。</li>
+    </ul>
+    <h4>四、页面指标怎么读</h4>
+    <div class="doc-cols">
+      <ul>
+        <li><b>标题旁状态 chip</b>：「仓位 X% · 波动 Y% · 闸门开/关」，口径与 A 完全一致；</li>
+        <li><b>策略收益 / 基准</b>：基准是<b>同期 7200.HK 买入持有</b>；想对比"不如直接买盈富"可参考 C 与 A/B 的横向差距；</li>
+        <li><b>年化 / 最大回撤 / Sharpe</b>：同前。恒指近十年长期震荡，本策略的价值主要看回撤压缩幅度；</li>
+      </ul>
+      <ul>
+        <li><b>净值曲线</b>：红=策略、灰=7200.HK 基准；回撤图越浅越好；</li>
+        <li><b>最新信号面板</b>：目标仓位 / 实现波动 / 趋势闸门 / 信号日；</li>
+        <li><b>参数区</b>：波动率目标（默认 0.40）与 SMA 窗口（默认200）可调重跑。</li>
+      </ul>
+    </div>
+  </div></div></div>
+  <div class="tabs" id="tabsC"></div>
+  <div id="bodyC"></div>
+  <div class="params">
+    <div><label>波动率目标 (年化)</label><input id="pC_tv" type="number" min="0.05" max="1.50" step="0.01" value="0.40"></div>
+    <div><label>趋势闸门 SMA</label><input id="pC_tw" type="number" min="20" max="500" step="1" value="200"></div>
+    <button onclick="rerun('C')">应用并重跑</button>
+    <span class="sub">交易标的 7200.HK 南方两倍恒指；港股无涨跌停但有手数限制</span>
+  </div>
+</section>
+
+<footer>回测含成本假设，历史收益不代表未来 · 节假日计划仅供参考 · 数据源 Yahoo Finance / 新浪财经（免费） · 本机运行</footer>
+<div id="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
