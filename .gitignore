@@ -25,3 +25,9 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# Vendored CDN library (loaded from jsDelivr at runtime)
+static/chart.umd.js
+
+# Regenerable backtest result data (run lab_optimize.py to rebuild)
+reports/lab_results.json
