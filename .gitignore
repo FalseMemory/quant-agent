@@ -1,5 +1,6 @@
 # Local secrets and runtime state
 data_cache/ai_config.json
+data_cache/ai_decisions.json
 data_cache/quant_agent.db
 strategy_settings.json
 holdings.json
