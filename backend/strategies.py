@@ -72,25 +72,31 @@ def vol_target_tqqq(
 # ---------------------------------------------------------------------------
 # Strategy B - A-share weekly cycle rotation
 # ---------------------------------------------------------------------------
+# 2026-08-29 重新寻优后调整（lab_b_sweep.py，258 组实验，基准沪深300）：
+# 候选池由"指数"改为可直接交易的 ETF，并新增与股票低相关的黄金 ETF。
+# 原指数池全历史 -4.0%，ETF+黄金池 +136.6%（同期沪深300 +12.9%）。
 ASSETS_B = {
-    "sz399006": {"name": "创业板指", "etf": "159915 创业板ETF", "class": "周期成长"},
-    "sh000300": {"name": "沪深300", "etf": "510300 沪深300ETF", "class": "大盘核心"},
-    "sh000015": {"name": "上证红利", "etf": "510880 红利ETF", "class": "红利价值"},
+    "sz159915": {"name": "创业板ETF", "etf": "159915 创业板ETF", "class": "周期成长"},
+    "sh510300": {"name": "沪深300ETF", "etf": "510300 沪深300ETF", "class": "大盘核心"},
+    "sh510880": {"name": "红利ETF", "etf": "510880 红利ETF", "class": "红利价值"},
+    "sh518880": {"name": "黄金ETF", "etf": "518880 黄金ETF", "class": "商品避险"},
     "sh511010": {"name": "国债ETF", "etf": "511010 国债ETF", "class": "防御"},
 }
 
-RISKY_B = ["sz399006", "sh000300", "sh000015"]
+RISKY_B = ["sz159915", "sh510300", "sh510880", "sh518880"]
 SAFE_B = "sh511010"
 
 
 def cycle_rotation_a(
     frames: dict[str, pd.DataFrame],
     *,
-    mom_window: int = 60,       # trading days momentum lookback
+    risky_assets: list[str] | None = None,
+    safe_asset: str | None = None,
+    mom_window: int = 180,      # trading days momentum lookback
     vol_window: int = 60,
-    ma_window: int = 40,        # absolute-trend gate
+    ma_window: int = 60,        # absolute-trend gate
     weekly: bool = True,
-    buffer_pct: float = 0.0,    # challenger must beat incumbent by this margin
+    buffer_pct: float = 0.10,   # challenger needs a normalized score advantage
 ) -> pd.DataFrame:
     """Weekly rotation: hold the risky asset with best risk-adjusted momentum
     if it is above its MA; otherwise hide in the bond ETF.
@@ -98,6 +104,12 @@ def cycle_rotation_a(
     Returns DataFrame with columns: date, pick(code), weight(1.0), reason.
     Index = decision dates (signal generated at these closes, executed next day).
     """
+    risky_assets = list(risky_assets or RISKY_B)
+    safe_asset = safe_asset or SAFE_B
+    missing = [code for code in [*risky_assets, safe_asset] if code not in frames]
+    if missing:
+        raise ValueError(f"策略B缺少行情数据：{', '.join(missing)}")
+
     closes = pd.DataFrame({c: f["close"] for c, f in frames.items()}).sort_index()
     rets = closes.pct_change()
 
@@ -116,23 +128,25 @@ def cycle_rotation_a(
         dec_idx = closes.index
 
     rows = []
-    prev_pick = SAFE_B
+    prev_pick = safe_asset
     for t in dec_idx:
         s = score.loc[t]
         ok = above_ma.loc[t]
-        candidates = [c for c in RISKY_B if bool(ok.get(c, False)) and np.isfinite(s.get(c, np.nan))]
+        candidates = [c for c in risky_assets if bool(ok.get(c, False)) and np.isfinite(s.get(c, np.nan))]
         if candidates:
             leader = max(candidates, key=lambda c: s[c])
             incumbent_ok = prev_pick in candidates and np.isfinite(s.get(prev_pick, np.nan))
-            if incumbent_ok and s[leader] <= s[prev_pick] * (1.0 + buffer_pct):
+            scale = max(abs(float(s[leader])), abs(float(s.get(prev_pick, 0.0))), 1e-9)
+            advantage = (float(s[leader]) - float(s.get(prev_pick, 0.0))) / scale
+            if incumbent_ok and advantage <= buffer_pct:
                 pick = prev_pick
                 reason = "在位标的仍有效，挑战者优势未达换仓阈值"
             else:
                 pick = leader
                 reason = "动量最优且在均线上方"
         else:
-            pick = SAFE_B
-            reason = "风险资产趋势走弱，转入防御"
+            pick = safe_asset
+            reason = "用户池内无标的通过趋势闸门，转入系统防御"
         rows.append({"date": t, "pick": pick, "weight": 1.0, "reason": reason})
         prev_pick = pick
     return pd.DataFrame(rows).set_index("date")

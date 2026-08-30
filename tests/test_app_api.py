@@ -1,0 +1,211 @@
+"""接口层测试：核心与扩展端点行为、参数校验与错误码。
+
+说明：为保证离线与可重复，策略构建通过 monkeypatch 替换为内存桩数据；
+配置文件统一重定向到临时目录，绝不触碰用户真实配置。
+`client` 夹具定义在 conftest.py，供多个测试文件共享。
+"""
+from __future__ import annotations
+
+import allure
+
+from conftest import phased_frame, synth_frame
+
+
+# --------------------------------------------------------------------------- 核心接口
+@allure.feature("接口")
+@allure.story("核心摘要")
+def test_summary_returns_three_strategies_and_settings(client):
+    r = client.get("/api/summary")
+    assert r.status_code == 200
+    body = r.json()
+
+    allure.attach(str(list(body.keys())), "返回字段", allure.attachment_type.TEXT)
+    assert body["ok"] is True
+    for sid in ("A", "B", "C"):
+        assert sid in body and body[sid]["windows"]["full"]["strategy"]["total_return"] is not None
+    assert set(body["settings"].keys()) == {"params_a", "params_b", "params_c"}
+
+
+@allure.feature("接口")
+@allure.story("核心摘要")
+def test_summary_b_exposure_reflects_fixed_single_position(client):
+    """接口层复核：B 的平均暴露必须是 100%，防止权重叠加缺陷回归。"""
+    body = client.get("/api/summary").json()
+    exposure = body["B"]["windows"]["full"]["strategy"]["avg_exposure"]
+
+    allure.attach(f"B avg_exposure = {exposure}%", "暴露度", allure.attachment_type.TEXT)
+    assert exposure == 100.0
+
+
+@allure.feature("接口")
+@allure.story("核心重跑")
+def test_rerun_accepts_valid_params_and_persists(client, tmp_settings_file):
+    import json
+
+    r = client.post("/api/rerun", json={
+        "params_a": {"target_vol": 0.38, "trend_window": 190}})
+    assert r.status_code == 200
+    body = r.json()
+
+    allure.attach(json.dumps(body["settings"], ensure_ascii=False), "保存后的配置",
+                  allure.attachment_type.JSON)
+    assert body["settings"]["params_a"]["target_vol"] == 0.38
+    assert body["settings"]["params_a"]["trend_window"] == 190
+    assert body["settings"]["params_a"]["assets"][0]["code"] == "TQQQ"
+    assert body["settings"]["params_a"]["assets"][0]["name"] != "TQQQ"
+    assert body["settings"]["params_c"]["target_vol"] == 0.40
+    assert body["settings"]["params_c"]["trend_window"] == 200
+    assert body["settings"]["params_c"]["assets"], "修改 A 不应覆盖 C 的候选池"
+    saved = json.loads(tmp_settings_file.read_text(encoding="utf-8"))
+    assert saved["params_a"]["trend_window"] == 190
+
+
+@allure.feature("接口")
+@allure.story("ETF名称自动补全")
+def test_rerun_resolves_blank_name_and_preserves_manual_name(client, monkeypatch):
+    from backend import watchlist
+
+    monkeypatch.setattr(watchlist, "fetch_name", lambda item: {
+        "SPY": "SPDR标普500ETF", "QQQ": "纳指100ETF",
+    }.get(item["code"]))
+    r = client.post("/api/rerun", json={"params_a": {
+        "target_vol": 0.35, "trend_window": 200,
+        "assets": [
+            {"code": "SPY", "name": "SPY"},
+            {"code": "QQQ", "name": "用户自定义名称"},
+        ],
+    }})
+    assert r.status_code == 200
+    assets = r.json()["settings"]["params_a"]["assets"]
+    assert assets[0]["name"] == "SPDR标普500ETF"
+    assert assets[1]["name"] == "用户自定义名称"
+
+
+@allure.feature("接口")
+@allure.story("核心重跑")
+def test_rerun_rejects_invalid_params_with_400(client):
+    r = client.post("/api/rerun", json={"params_a": {"target_vol": 9}})
+
+    allure.attach(r.text, "错误响应", allure.attachment_type.TEXT)
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
+@allure.feature("接口")
+@allure.story("设置读取")
+def test_settings_endpoint_returns_current_params(client):
+    body = client.get("/api/settings").json()
+
+    assert body["ok"] is True
+    assert body["params_a"]["target_vol"] == 0.35
+
+
+# --------------------------------------------------------------------------- 扩展接口
+@allure.feature("接口")
+@allure.story("扩展摘要")
+def test_ext_summary_shape(client):
+    from backend import ext_strategy as ex
+
+    body = client.get("/api/ext/summary").json()
+
+    allure.attach(str({k: v["status"] for k, v in body["results"].items()}), "策略状态",
+                  allure.attachment_type.TEXT)
+    assert body["ok"] is True
+    assert len(body["groups"]) == len(ex.EXT_GROUPS)
+    assert len(body["results"]) == len(ex.EXT_STRATEGIES)
+    assert len(body["strategies"]) == len(ex.EXT_STRATEGIES), "注册表元信息不应被结果覆盖"
+    sample = body["strategies"]["us_qqq_vt"]
+    assert "default_params" in sample and "description" in sample
+
+
+@allure.feature("接口")
+@allure.story("扩展重跑")
+def test_ext_rerun_updates_single_strategy(client, tmp_settings_file):
+    import json
+
+    r = client.post("/api/ext/rerun", json={
+        "strategy_id": "us_spy_dma", "params": {"fast": 30, "slow": 100}})
+    assert r.status_code == 200
+    body = r.json()
+
+    allure.attach(json.dumps(body["strategy"]["params"], ensure_ascii=False), "策略参数",
+                  allure.attachment_type.JSON)
+    assert body["strategy"]["params"] == {"fast": 30, "slow": 100}
+    saved = json.loads(tmp_settings_file.read_text(encoding="utf-8"))
+    assert saved["ext"]["strategies"]["us_spy_dma"]["params"]["fast"] == 30
+
+
+@allure.feature("接口")
+@allure.story("扩展重跑")
+def test_ext_rerun_rejects_invalid_params(client):
+    r = client.post("/api/ext/rerun", json={
+        "strategy_id": "us_spy_dma", "params": {"fast": 900, "slow": 100}})
+
+    allure.attach(r.text, "错误响应", allure.attachment_type.TEXT)
+    assert r.status_code == 400
+    assert "快线" in r.json()["error"]
+
+
+@allure.feature("接口")
+@allure.story("扩展重跑")
+def test_ext_rerun_rejects_unknown_strategy(client):
+    r = client.post("/api/ext/rerun", json={"strategy_id": "ghost", "params": {}})
+
+    assert r.status_code == 400
+
+
+@allure.feature("接口")
+@allure.story("扩展重跑")
+def test_ext_rerun_disable_marks_disabled(client, tmp_settings_file):
+    import json
+
+    body = client.post("/api/ext/rerun", json={
+        "strategy_id": "hk_vt", "enabled": False}).json()
+
+    allure.attach(str(body["strategy"]["status"]), "状态", allure.attachment_type.TEXT)
+    assert body["strategy"]["status"] == "disabled"
+    saved = json.loads(tmp_settings_file.read_text(encoding="utf-8"))
+    assert saved["ext"]["strategies"]["hk_vt"]["enabled"] is False
+
+    back = client.get("/api/ext/summary").json()
+    assert back["results"]["hk_vt"]["enabled"] is False
+    assert back["results"]["us_qqq_vt"]["enabled"] is True, "停用一套不应影响其他策略"
+
+
+@allure.feature("接口")
+@allure.story("持仓")
+def test_holdings_roundtrip(client, tmp_settings_file, monkeypatch):
+    from backend import advisor
+
+    monkeypatch.setattr(advisor, "HOLDINGS_FILE",
+                        tmp_settings_file.parent / "holdings.json")
+    r = client.post("/api/holdings", json={"holdings": {"A": {"TQQQ": 60, "现金": 40}}})
+
+    assert r.status_code == 200
+    assert client.get("/api/holdings").json()["holdings"]["A"]["TQQQ"] == 60
+
+
+@allure.feature("接口")
+@allure.story("持仓")
+def test_holdings_returns_json_error_instead_of_plain_500(client, monkeypatch):
+    from backend import advisor
+
+    def locked(_holdings):
+        raise PermissionError("文件被占用")
+
+    monkeypatch.setattr(advisor, "save_holdings", locked)
+    r = client.post("/api/holdings", json={"holdings": {"A": {"TQQQ": 50, "现金": 50}}})
+
+    assert r.status_code == 500
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json() == {"ok": False, "error": "持仓保存失败：文件被占用"}
+
+
+@allure.feature("接口")
+@allure.story("持仓")
+def test_holdings_rejects_non_numeric_weight_with_json_400(client):
+    r = client.post("/api/holdings", json={"holdings": {"A": {"TQQQ": "非法"}}})
+
+    assert r.status_code == 400
+    assert r.headers["content-type"].startswith("application/json")
+    assert "必须是数值" in r.json()["error"]

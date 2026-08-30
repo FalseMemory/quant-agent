@@ -1,0 +1,1 @@
+{"total":2,"items":[{"uid":"e387fa4bb326b54ea8c19c2822aba374","name":"tests","statistic":{"failed":0,"broken":0,"skipped":0,"passed":95,"unknown":0,"total":95}},{"uid":"335067e70606029c9656a092261be8ca","name":"quant-agent.tests","statistic":{"failed":0,"broken":0,"skipped":0,"passed":95,"unknown":0,"total":95}}]}

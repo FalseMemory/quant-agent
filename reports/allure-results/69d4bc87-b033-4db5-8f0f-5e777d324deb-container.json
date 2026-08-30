@@ -1,0 +1,1 @@
+{"uuid": "2a8f360b-314d-4764-a072-1e77d64533a2", "children": ["12f363ce-56ad-4177-9a17-e57e37e7f356"], "befores": [{"name": "rotation_frames", "status": "passed", "start": 1788080417778, "stop": 1788080417801}], "afters": [{"name": "rotation_frames::<lambda>", "start": 1788080417812}], "start": 1788080417778, "stop": 1788080417812}

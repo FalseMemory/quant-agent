@@ -1,0 +1,1 @@
+{'start': '2024-06-03', 'end': '2025-11-28', 'strategy': {'total_return': 47.5, 'cagr': 29.9, 'ann_vol': 0.1, 'sharpe': 312.69, 'max_dd': 0.0, 'calmar': None, 'avg_exposure': None}, 'benchmark': {'total_return': 35.7, 'cagr': 22.8, 'ann_vol': 1.5, 'sharpe': 12.96, 'max_dd': -6.7, 'calmar': 3.39, 'avg_exposure': None}}

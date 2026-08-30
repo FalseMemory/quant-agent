@@ -1,0 +1,1 @@
+{"uuid": "ac0aa346-dcde-417b-9eea-cd081e45af5d", "children": ["932b97cc-513c-4792-b736-36e58469d07c"], "befores": [{"name": "tmp_settings_file", "status": "passed", "start": 1788078141269, "stop": 1788078141269}], "afters": [{"name": "tmp_settings_file::<lambda>", "start": 1788078141269}], "start": 1788078141269, "stop": 1788078141269}

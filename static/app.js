@@ -11,11 +11,12 @@ const state = {
 const WINDOWS = [
   ["full", "全历史"], ["3y", "近3年"], ["1y", "近1年"], ["since_jun", "2026-06以来"],
 ];
-const HOLDING_KEYS = {
-  A: ["TQQQ", "现金"],
-  B: ["159915 创业板ETF", "510300 沪深300ETF", "510880 红利ETF", "511010 国债ETF", "现金"],
-  C: ["7200.HK", "现金"],
-};
+function holdingKeys(sid) {
+  const plan = PLAN?.plans?.[sid];
+  const active = (plan?.pool || []).map(x => x.asset).filter(Boolean);
+  const legacy = (plan?.legacy_holdings || []).map(x => x.asset).filter(Boolean);
+  return [...new Set([...active, ...legacy, "现金"])];
+}
 
 function toast(msg) {
   const t = document.getElementById("toast");
@@ -62,12 +63,14 @@ function renderStrategy(sid) {
     chip.textContent = `持有 ${c.pick_name} (${c.etf})`;
     chip.className = "chip up";
   } else {
-    chip.textContent = `仓位 ${c.exposure}% · 波动 ${c.realized_vol}% · 闸门${c.trend_gate_on ? "开" : "关"}`;
+    chip.textContent = `${c.etf || "现金"} · 仓位 ${c.exposure}% · 波动 ${c.realized_vol ?? "—"}% · 闸门${c.trend_gate_on ? "开" : "关"}`;
     chip.className = "chip " + (c.exposure >= 60 ? "up" : c.exposure <= 5 ? "down" : "warn");
   }
+  const wins = WINDOWS.concat(d.windows.custom ? [["custom", "自定义"]] : []);
+  if (!wins.some(([w]) => st.window === w)) st.window = wins[0][0];
   const tabs = document.getElementById("tabs" + sid);
   tabs.innerHTML = "";
-  WINDOWS.forEach(([w, label]) => {
+  wins.forEach(([w, label]) => {
     const b = document.createElement("button");
     b.textContent = label;
     b.className = st.window === w ? "on" : "";
@@ -80,14 +83,14 @@ function renderStrategy(sid) {
   const S = wp.strategy, Bm = wp.benchmark;
   document.getElementById("body" + sid).innerHTML = `
     <div class="metrics">
-      <div class="m"><div class="k">策略收益</div><div class="v ${cls(S.total_return)}">${fmt(S.total_return, "%")}</div><div class="s">基准 ${fmt(Bm.total_return, "%")} · ${wp.beats_benchmark ? "跑赢 ✓" : "未跑赢 ✗"}</div></div>
+      <div class="m"><div class="k">策略收益</div><div class="v ${cls(S.total_return)}">${fmt(S.total_return, "%")}</div><div class="s">${esc(wp.bench_name || "基准")} ${fmt(Bm.total_return, "%")} · ${wp.beats_benchmark ? "跑赢 ✓" : "未跑赢 ✗"}</div></div>
       <div class="m"><div class="k">策略年化</div><div class="v">${fmt(S.cagr, "%")}</div><div class="s">基准 ${fmt(Bm.cagr, "%")}</div></div>
       <div class="m"><div class="k">最大回撤</div><div class="v neg">${fmt(S.max_dd, "%")}</div><div class="s">基准 ${fmt(Bm.max_dd, "%")}</div></div>
       <div class="m"><div class="k">Sharpe</div><div class="v">${fmt(S.sharpe)}</div><div class="s">基准 ${fmt(Bm.sharpe)}</div></div>
       <div class="m"><div class="k">窗口</div><div class="v" style="font-size:14px;line-height:30px">${wp.start} → ${wp.end}</div></div>
     </div>
     <div class="charts">
-      <div class="chartbox"><h3>净值曲线（起点=1，红=策略，灰=基准）</h3><canvas id="eq_${sid}"></canvas></div>
+      <div class="chartbox"><h3>净值曲线（实线=策略，虚线=${esc(wp.bench_name || "基准")}）</h3><canvas id="eq_${sid}"></canvas></div>
       <div class="chartbox"><h3>策略回撤 %</h3><canvas id="dd_${sid}"></canvas></div>
     </div>
     <div class="side">
@@ -100,21 +103,72 @@ function renderStrategy(sid) {
 }
 
 const chartColors = () => ({ txt: "#9a9890", grid: "rgba(255,255,255,.06)", red: "#e05252", gray: "#77756e", green: "#35b881" });
+const B_BENCH_COLORS = ["#4e91e6", "#f0a43a", "#b06ce0", "#e6c84e", "#42b8a5", "#e06f8b", "#7bbf5e", "#d97b45", "#6f8ee6", "#c6a45a"];
 let eqChart = {}, ddChart = {};
 function drawCharts(sid, wp) {
   const C = chartColors();
   const labels = wp.dates;
+  const benchName = wp.bench_name || "基准";
+  const positionLines = index => {
+    const p = wp.positions?.[index];
+    if (!p) return ["持仓：暂无数据"];
+    const items = Array.isArray(p.items) && p.items.length
+      ? p.items : [{ asset: p.asset || "现金", weight: p.weight ?? 0 }];
+    return ["当日目标持仓：", ...items.map(x => `  ${x.asset}  ${x.weight}%`)];
+  };
+  const extraBenches = Array.isArray(wp.benchmark_curves)
+    ? wp.benchmark_curves.map((curve, i) => ({
+        label: curve.name,
+        data: curve.values,
+        borderColor: B_BENCH_COLORS[i % B_BENCH_COLORS.length],
+        backgroundColor: B_BENCH_COLORS[i % B_BENCH_COLORS.length],
+        borderWidth: 1.25, borderDash: [5, 4], pointRadius: 0, pointHoverRadius: 3,
+        tension: .1, hidden: true,
+      })) : [];
+  const datasets = [
+    { label: `策略 ${sid}`, data: wp.equity, borderColor: C.red, backgroundColor: C.red,
+      borderWidth: 1.9, pointRadius: 0, pointHoverRadius: 3, tension: .1 },
+    { label: benchName, data: wp.bench_equity, borderColor: C.gray, backgroundColor: C.gray,
+      borderWidth: 1.4, borderDash: [7, 5], pointRadius: 0, pointHoverRadius: 3, tension: .1 },
+    ...extraBenches,
+  ];
   if (eqChart[sid]) eqChart[sid].destroy();
   if (ddChart[sid]) ddChart[sid].destroy();
   eqChart[sid] = new Chart(document.getElementById(`eq_${sid}`), {
     type: "line",
-    data: { labels, datasets: [
-      { data: wp.equity, borderColor: C.red, borderWidth: 1.6, pointRadius: 0, tension: .1 },
-      { data: wp.bench_equity, borderColor: C.gray, borderWidth: 1.2, pointRadius: 0, tension: .1 },
-    ]},
+    data: { labels, datasets },
     options: {
       maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: { mode: "index", intersect: false } },
+      interaction: { mode: "index", intersect: false, axis: "x" },
+      plugins: {
+        legend: {
+          display: true,
+          position: "top",
+          align: "end",
+          onClick: (event, item, legend) => {
+            const chart = legend.chart;
+            chart.setDatasetVisibility(item.datasetIndex, !chart.isDatasetVisible(item.datasetIndex));
+            chart.update();
+          },
+          labels: {
+            color: C.txt, boxWidth: 24, boxHeight: 2, padding: 14, font: { size: 11 },
+            generateLabels: chart => Chart.defaults.plugins.legend.labels.generateLabels(chart)
+              .map(item => ({ ...item, text: `${item.hidden ? "○" : "●"} ${item.text}` })),
+          },
+        },
+        tooltip: {
+          mode: "index", intersect: false, position: "nearest", caretPadding: 10,
+          displayColors: true, boxWidth: 10, boxHeight: 2, padding: 11,
+          backgroundColor: "rgba(24,24,22,.94)", titleColor: "#f2f0e9", bodyColor: "#dedbd2",
+          borderColor: "rgba(255,255,255,.16)", borderWidth: 1,
+          titleFont: { size: 12, weight: "600" }, bodyFont: { size: 11, lineHeight: 1.45 },
+          callbacks: {
+            title: items => items.length ? `交易日  ${items[0].label}` : "",
+            label: ctx => `${ctx.dataset.label}：${Number(ctx.parsed.y).toFixed(4)}`,
+            afterBody: items => positionLines(items[0]?.dataIndex),
+          },
+        },
+      },
       scales: {
         x: { ticks: { color: C.txt, maxTicksLimit: 8, font: { size: 10 } }, grid: { display: false } },
         y: { ticks: { color: C.txt, font: { size: 10 } }, grid: { color: C.grid } },
@@ -137,10 +191,11 @@ function drawCharts(sid, wp) {
 
 function renderExtraVol(d, sid) {
   const el = document.getElementById("extra_" + sid);
-  let rows = `<h3>${sid === "C" ? "港股" : "美股"}·波动率目标机制说明</h3><table>` +
+  let rows = `<h3>${sid === "C" ? "港股" : "美股"}·动态池波动率目标</h3><table>` +
     `<tr><th>项目</th><th>状态</th></tr>` +
-    `<tr><td>SMA200 趋势闸门</td><td>${d.current.trend_gate_on ? "开启（允许持仓）" : "关闭（强制空仓）"}</td></tr>` +
-    `<tr><td>信号源实现波动(20日)</td><td>${d.current.realized_vol}% / 目标 ${d.current.target_vol}%</td></tr>` +
+    `<tr><td>当前选中</td><td>${esc(d.current.etf || "现金")}</td></tr>` +
+    `<tr><td>SMA${d.current.trend_window || 200} 趋势资格</td><td>${d.current.trend_gate_on ? "合格（允许持仓）" : "无合格候选（现金）"}</td></tr>` +
+    `<tr><td>选中资产实现波动</td><td>20日 ${d.current.realized_vol_20 ?? "—"}% / 40日 ${d.current.realized_vol ?? "—"}% / 目标 ${d.current.target_vol}%</td></tr>` +
     `<tr><td>目标仓位</td><td>${d.current.exposure}%</td></tr>` +
     `<tr><td>执行方式</td><td>收盘出信号，次日开盘附近执行；无需盯盘</td></tr></table>`;
   el.innerHTML = rows;
@@ -162,8 +217,9 @@ function renderCurrent(sid, d) {
       <div class="kv"><span class="k">决策日</span><span>${c.decision_date}</span></div>`;
   } else {
     el.innerHTML = `<h3>最新信号</h3>
+      <div class="kv"><span class="k">当前选中</span><span>${esc(c.etf || "现金")}</span></div>
       <div class="kv"><span class="k">目标仓位</span><span>${c.exposure}%</span></div>
-      <div class="kv"><span class="k">实现波动</span><span>${c.realized_vol}%</span></div>
+      <div class="kv"><span class="k">实现波动</span><span>${c.realized_vol ?? "—"}%</span></div>
       <div class="kv"><span class="k">趋势闸门</span><span>${c.trend_gate_on ? "开启" : "关闭"}</span></div>
       <div class="kv"><span class="k">信号日</span><span>${c.as_of}</span></div>`;
   }
@@ -242,6 +298,53 @@ function showPlanTab(sid) {
     pn.hidden = pn.dataset.sid !== sid);
 }
 
+function poolTableHtml(sid) {
+  const pool = PLAN.plans[sid]?.pool || [];
+  const rows = pool.map(x => {
+    const s = x.snap;
+    const status = x.above_ma !== undefined && x.above_ma !== null
+      ? `<span class="chip ${x.above_ma ? "up" : "down"}">${x.above_ma ? "SMA合格" : "SMA未过"}</span>` : "—";
+    const marketCells = s ? `
+      <td>${esc(s.close)}</td>
+      <td class="${cls(s.chg_1d_pct)}">${fmt(s.chg_1d_pct, "%")}</td>
+      <td class="${cls(s.chg_20d_pct)}">${fmt(s.chg_20d_pct, "%")}</td>
+      <td>${s.realized_vol_20d_pct ?? "—"}</td>
+      <td style="color:var(--dim)" title="${esc(s.source || x.quote_source || "")}">${esc(s.as_of)}${s.quote_level === "light" ? " · 快照" : ""}</td>`
+      : `<td colspan="5" class="sub" title="${esc(x.quote_error || "数据源暂时不可用")}">行情暂不可用：${esc(x.quote_error || "请确认代码或稍后重试")}</td>`;
+    return `<tr>
+      <td>${esc(x.ref?.code || "—")}</td><td>${esc(x.asset)}</td>
+      <td>${status}</td><td>${x.momentum_score == null ? "—" : Number(x.momentum_score).toFixed(3)}</td>
+      ${marketCells}
+      ${x.above_ma !== undefined && x.above_ma !== null ? `<td><button onclick="removePoolAsset('${sid}', '${esc(x.ref?.code || "")}')">移除</button></td>` : ""}
+    </tr>`;
+  }).join("");
+  if (!rows) return "";
+  return `<div class="tblwrap" style="margin-top:10px"><table>
+    <tr><th>代码</th><th>标的</th><th>趋势资格</th><th>动量分数</th><th>现价</th><th>1日</th><th>20日</th><th>波动20d</th><th>截至</th><th></th></tr>
+    ${rows}</table></div>`;
+}
+
+function poolManagerHtml(sid) {
+  const d = DATA[sid] || {};
+  const count = (d.pool || []).length;
+  const failed = (d.failed_assets || []).map(x => `${x.code || "?"} ${x.error || "行情失败"}`);
+  const hint = { A: "输入美股代码，如 SPY / QQQ", B: "输入6位ETF代码，如 510500", C: "输入港股代码，如 2800 / 2800.HK" }[sid];
+  const safe = sid === "B" ? `；${esc(d.safe_asset?.etf || "国债ETF")}为系统防御资产，不占额度` : "";
+  return `<div class="pool-manager">
+    <div class="pm-head"><b>我的策略 ${sid} ETF 候选池</b><span class="chip info">${count}/${d.pool_limit || 10}</span>
+      <span class="sub">用户池 1～10 只${safe}</span></div>
+    <div class="pool-add"><input id="${sid}_pool_code" placeholder="${hint}">
+      <input id="${sid}_pool_name" placeholder="名称可留空，系统自动识别">
+      <button class="primary" onclick="addPoolAsset('${sid}')" ${count >= (d.pool_limit || 10) ? "disabled" : ""}>添加并重跑推荐</button></div>
+    ${failed.length ? `<div class="pool-warn">行情失败：${failed.map(esc).join("；")}</div>` : ""}
+  </div>`;
+}
+
+function legacyHoldingsHtml(p) {
+  if (!p.legacy_holdings?.length) return "";
+  return `<div class="pool-warn"><b>池外遗留持仓</b>：${p.legacy_holdings.map(x => `${esc(x.asset)} ${x.weight}%`).join("；")}。移出候选池不会自动清仓，请在持仓区保留并手动处理。</div>`;
+}
+
 function planCardHtml(sid) {
   const p = PLAN.plans[sid];
   const acts = p.actions.map(a => `
@@ -251,7 +354,7 @@ function planCardHtml(sid) {
       <span style="color:var(--muted);font-size:12px">${a.from}% → ${a.to}%</span>
       <span class="badge">${a.action}${a.action !== "持有" ? " " + Math.abs(a.delta) + "%" : ""}</span>
     </div>`).join("");
-  const holdEdits = HOLDING_KEYS[sid].map(k =>
+  const holdEdits = holdingKeys(sid).map(k =>
     `<div class="hrow"><label>${k}</label><input type="number" step="0.1" min="0" max="100"
       id="hold_${sid}_${k}" value="${(PLAN.savedHoldings?.[sid]?.[k] ?? 0).toFixed(1)}"></div>`).join("");
   return `
@@ -260,6 +363,9 @@ function planCardHtml(sid) {
     <div style="font-size:13px">${p.headline}</div>
     <div class="pc-rationale">依据：${p.rationale}${p.session.next_open_cst ? "<br>下次开盘：" + p.session.next_open_cst : ""}</div>
     ${acts}
+    ${poolManagerHtml(sid)}
+    ${poolTableHtml(sid)}
+    ${legacyHoldingsHtml(p)}
     <div class="holdings-edit">
       <div class="sub" style="font-size:11.5px">我的当前持仓 %（会自动归一化为100）</div>
       ${holdEdits}
@@ -270,7 +376,7 @@ function planCardHtml(sid) {
 async function saveHoldings(sid) {
   const holdings = {};
   try {
-    for (const k of HOLDING_KEYS[sid]) {
+    for (const k of holdingKeys(sid)) {
       holdings[k] = readNumber(`hold_${sid}_${k}`, `${sid} ${k}持仓比例`, 0, 100);
     }
     if (Object.values(holdings).reduce((sum, value) => sum + value, 0) <= 0)
@@ -279,7 +385,10 @@ async function saveHoldings(sid) {
     const r = await fetch("/api/holdings", { method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ holdings: saved }) });
-    const j = await r.json();
+    const contentType = r.headers.get("content-type") || "";
+    const j = contentType.includes("application/json")
+      ? await r.json()
+      : { ok: false, error: (await r.text()).trim() || `HTTP ${r.status}` };
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     PLAN.savedHoldings = j.holdings;
     const pr = await fetch("/api/plan");
@@ -296,7 +405,7 @@ async function saveHoldings(sid) {
 /* ---------- params ---------- */
 const PARAM_DEFAULTS = {
   params_a: { target_vol: 0.35, trend_window: 200 },
-  params_b: { mom_window: 120, ma_window: 60 },
+  params_b: { mom_window: 180, ma_window: 60 },
   params_c: { target_vol: 0.40, trend_window: 200 },
 };
 
@@ -308,6 +417,8 @@ function restoreSettings(settings) {
   };
   setValue("pA_tv", s.params_a?.target_vol, PARAM_DEFAULTS.params_a.target_vol);
   setValue("pA_tw", s.params_a?.trend_window, PARAM_DEFAULTS.params_a.trend_window);
+  setValue("pB_mom", s.params_b?.mom_window, PARAM_DEFAULTS.params_b.mom_window);
+  setValue("pB_ma", s.params_b?.ma_window, PARAM_DEFAULTS.params_b.ma_window);
   setValue("pC_tv", s.params_c?.target_vol, PARAM_DEFAULTS.params_c.target_vol);
   setValue("pC_tw", s.params_c?.trend_window, PARAM_DEFAULTS.params_c.trend_window);
 }
@@ -326,15 +437,65 @@ function readParams(sid) {
   if (sid === "A") return { params_a: {
     target_vol: readNumber("pA_tv", "A 波动率目标", 0.05, 1.50),
     trend_window: readNumber("pA_tw", "A 趋势闸门 SMA", 20, 500, true),
+    assets: poolAssets("A"),
   }};
   if (sid === "B") return { params_b: {
     mom_window: readNumber("pB_mom", "B 动量窗口", 20, 500, true),
     ma_window: readNumber("pB_ma", "B 均线闸门", 20, 500, true),
+    assets: (DATA.B?.pool || []).map(x => ({ code: x.code, name: x.name || splitAssetLabel(x.etf || "").name, class: x.class || "用户候选" })),
+    safe_asset: DATA.B?.safe_asset ? { code: DATA.B.safe_asset.code, name: DATA.B.safe_asset.name, class: DATA.B.safe_asset.class || "系统防御" } : undefined,
   }};
   return { params_c: {
     target_vol: readNumber("pC_tv", "C 波动率目标", 0.05, 1.50),
     trend_window: readNumber("pC_tw", "C 趋势闸门 SMA", 20, 500, true),
+    assets: poolAssets("C"),
   }};
+}
+
+function poolAssets(sid) {
+  return (DATA[sid]?.pool || []).map(x => ({ code: x.code, name: x.name, class: x.class || "用户候选" }));
+}
+
+async function savePool(sid, assets) {
+  if (!assets.length) { toast("候选池至少保留1只ETF"); return; }
+  let body;
+  try {
+    body = readParams(sid);
+    body[`params_${sid.toLowerCase()}`].assets = assets;
+  } catch (e) { toast("输入无效: " + e.message); return; }
+  toast(`正在校验ETF池并重跑策略${sid}…`);
+  try {
+    const r = await fetch("/api/rerun", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    DATA.A = j.A; DATA.B = j.B; DATA.C = j.C;
+    restoreSettings(j.settings); renderAll(); await loadPlan();
+    toast(`策略${sid}候选池已保存（${DATA[sid].pool.length}/10），推荐已更新`);
+  } catch (e) { toast("候选池保存失败: " + e.message); }
+}
+
+function addPoolAsset(sid) {
+  let code = document.getElementById(`${sid}_pool_code`)?.value.trim() || "";
+  const name = document.getElementById(`${sid}_pool_name`)?.value.trim();
+  if (sid === "A") {
+    code = code.toUpperCase();
+    if (!/^[A-Z0-9.-]+$/.test(code) || code.endsWith(".HK")) { toast("请输入有效美股代码，如 SPY / QQQ"); return; }
+  } else if (sid === "B") {
+    if (!/^\d{6}$/.test(code)) { toast("请输入6位A股ETF代码"); return; }
+  } else {
+    code = code.toUpperCase();
+    if (!/^\d{4,5}(\.HK)?$/.test(code)) { toast("请输入港股代码，如 2800 / 2800.HK"); return; }
+    code = `${code.replace(/\.HK$/, "").padStart(4, "0")}.HK`;
+  }
+  const assets = poolAssets(sid);
+  if (assets.length >= (DATA[sid]?.pool_limit || 10)) { toast("候选池最多10只ETF"); return; }
+  if (assets.some(x => sid === "B" ? String(x.code).endsWith(code) : x.code === code)) { toast("该ETF已在候选池中"); return; }
+  assets.push({ code, name: name || "", class: "用户候选" });
+  savePool(sid, assets);
+}
+
+function removePoolAsset(sid, code) {
+  savePool(sid, poolAssets(sid).filter(x => x.code !== code && !(sid === "B" && String(x.code).endsWith(code))));
 }
 
 async function rerun(sid) {
@@ -349,8 +510,29 @@ async function rerun(sid) {
     DATA.A = j.A; DATA.B = j.B; DATA.C = j.C;
     restoreSettings(j.settings);
     renderAll(); loadPlan(); toast(`${sid} 参数已保存，刷新后仍会保留`);
+    if (state[sid].customStart) applyCustom(sid);   // 重跑后自动重算自定义区间
   } catch (e) {
     toast("保存失败: " + e.message);
+  }
+}
+
+/* ---------- 自定义起点收益对比 ---------- */
+async function applyCustom(sid) {
+  const el = document.getElementById("cust_" + sid);
+  const start = el && el.value;
+  if (!start) { toast("请先选择起始日期"); return; }
+  toast("计算自定义区间…");
+  try {
+    const r = await fetch(`/api/custom?sid=${sid}&start=${encodeURIComponent(start)}`);
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    DATA[sid].windows.custom = j.payload;
+    state[sid].customStart = start;
+    state[sid].window = "custom";
+    renderStrategy(sid);
+    toast(`${sid} 已按 ${j.payload.start} 起算（假设当日收盘按目标建仓，含 15bp 成本口径）`);
+  } catch (e) {
+    toast("自定义区间失败: " + e.message);
   }
 }
 
@@ -615,10 +797,10 @@ function buildAiResultHtml(j) {
       `<div class="m"><div class="k">${MK_LABEL[k] || k}</div><div>${esc(mv[k] || "—")}</div></div>`
     ).join("") + `</div>`;
 
-  const bySid = { A: [], B: [], C: [], WATCH: [] };
+  const bySid = { A: [], B: [], C: [] };
   for (const d of j.decisions) bySid[d.strategy]?.push(d);
-  for (const sid of ["A", "B", "C", "WATCH"]) {
-    const sess = j.sessions?.[sid] || (sid === "WATCH" ? { market: "自选观察", plan_for: "本次生成", plan_date: "" } : {});
+  for (const sid of ["A", "B", "C"]) {
+    const sess = j.sessions?.[sid] || {};
     const list = bySid[sid];
     const trade = list.some(d => d.action === "buy" || d.action === "sell");
     html += `<div class="decwrap${trade ? " trade" : ""}">
@@ -727,75 +909,3 @@ async function loadAiHistory() {
 
 loadData();
 initAi();
-
-/* ---------- user watchlist ---------- */
-const WL_MK = { a: "A股", us: "美股", hk: "港股" };
-
-async function loadWatch() {
-  const el = document.getElementById("wlBody");
-  try {
-    const j = await (await fetch("/api/watchlist")).json();
-    if (!j.ok) throw new Error(j.error || "加载失败");
-    renderWatch(j.items);
-  } catch (e) { el.innerHTML = `<span class="sub">加载失败：${esc(e.message)}</span>`; }
-}
-
-function renderWatch(items) {
-  const el = document.getElementById("wlBody");
-  if (!items.length) { el.innerHTML = '<span class="sub">暂无自选，用上方表单添加（会自动拉取行情并进入 AI 视野）</span>'; return; }
-  el.innerHTML = "<table><tr><th>代码</th><th>名称</th><th>市场</th><th>持仓%</th><th>现价</th><th>1日</th><th>5日</th><th>20日</th><th>波动20d</th><th>vs SMA50</th><th>vs SMA200</th><th>截至</th><th></th></tr>" +
-    items.map(it => {
-      const s = it.snap;
-      const cells = s ? `
-        <td>${s.close}</td>
-        <td class="${cls(s.chg_1d_pct)}">${fmt(s.chg_1d_pct, "%")}</td>
-        <td class="${cls(s.chg_5d_pct)}">${fmt(s.chg_5d_pct, "%")}</td>
-        <td class="${cls(s.chg_20d_pct)}">${fmt(s.chg_20d_pct, "%")}</td>
-        <td>${s.realized_vol_20d_pct ?? "—"}</td>
-        <td class="${cls(s.vs_sma50_pct)}">${fmt(s.vs_sma50_pct, "%")}</td>
-        <td class="${cls(s.vs_sma200_pct)}">${fmt(s.vs_sma200_pct, "%")}</td>
-        <td style="color:var(--dim)">${s.as_of}</td>`
-        : `<td colspan="7" class="sub">数据不可用：${esc(it.error || "")}</td>`;
-      return `<tr>
-        <td>${esc(it.code)}</td>
-        <td>${esc(it.name || "—")}</td>
-        <td>${WL_MK[it.market] || it.market}</td>
-        <td><input class="wl-holding" data-code="${esc(it.code)}" type="number" min="0" max="100" step="0.1" value="${Number(it.holding_pct || 0)}" style="width:72px" onchange="saveWatchHolding('${esc(it.code)}', this.value)"></td>
-        ${cells}
-        <td><button style="padding:2px 10px;font-size:12px" onclick="rmWatch('${esc(it.code)}')">删除</button></td>
-      </tr>`;
-    }).join("") + "</table>";
-}
-
-async function saveWatchHolding(code, value) {
-  const r = await fetch("/api/holdings"); const j = await r.json();
-  const h = j.holdings || {}; h.WATCH = h.WATCH || {}; h.WATCH[code] = Math.max(0, Math.min(100, Number(value) || 0));
-  const saved = await (await fetch("/api/holdings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ holdings: h }) })).json();
-  if (saved.ok) toast(`${code} 持仓已保存`); else toast("持仓保存失败");
-}
-
-async function addWatch() {
-  const code = document.getElementById("wl_code").value.trim();
-  if (!code) { toast("请输入代码"); return; }
-  const market = document.getElementById("wl_market").value;
-  const r = await fetch("/api/watchlist/add", { method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, market }) });
-  const j = await r.json();
-  if (!j.ok) { toast("添加失败: " + j.error); return; }
-  document.getElementById("wl_code").value = "";
-  toast(`已添加 ${code}，正在刷新行情…`);
-  loadWatch();
-}
-
-async function rmWatch(code) {
-  const r = await fetch("/api/watchlist/remove", { method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code }) });
-  const j = await r.json();
-  if (!j.ok) { toast("删除失败"); return; }
-  toast("已删除 " + code);
-  loadWatch();
-}
-
-loadWatch();

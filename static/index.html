@@ -75,6 +75,10 @@
   .ptab.on { border-color: var(--blue); color: var(--blue); background: #2c2c33; }
   .ptab .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); margin-left: 6px; vertical-align: 1px; }
   .tblwrap { overflow-x: auto; margin: 2px 0 10px; }
+  .pool-manager { margin-top: 12px; padding: 12px 14px; border: 1px dashed var(--line); border-radius: 9px; background: #1c1c20; }
+  .pool-add { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 9px; }
+  .pool-add input { min-width: 180px; flex: 1; background: var(--bg); border: 1px solid var(--line); color: var(--txt); border-radius: 6px; padding: 6px 9px; }
+  .pool-warn { margin-top: 9px; padding: 8px 10px; border-radius: 7px; color: var(--amber); background: rgba(239,163,43,.08); font-size: 12px; }
   @media (max-width: 640px) { .ptab { flex: 1 1 30%; text-align: center; padding: 9px 6px; } }
   /* strategy docs */
   .doc-btn { padding: 3px 13px; font-size: 12px; border-radius: 6px; background: var(--card); }
@@ -146,26 +150,6 @@
   <div id="planPanels"><div class="sub">加载中…</div></div>
 </section>
 
-<section class="plansec" id="wlSec">
-  <div class="shead">
-    <h2>自选观察</h2>
-    <span class="sub">自定义股票/ETF 会进入 AI 的 WATCH 分析池，可结合你的持仓给出买入、持有、减仓或卖出判断</span>
-  </div>
-  <div class="ai-settings">
-    <div><label>代码</label><input id="wl_code" placeholder="如 NVDA、159915、600519、0700" style="width:220px"></div>
-    <div><label>市场</label><select id="wl_market">
-      <option value="auto">自动识别</option>
-      <option value="a">A股</option>
-      <option value="us">美股</option>
-      <option value="hk">港股</option>
-    </select></div>
-    <button class="primary" onclick="addWatch()">添加自选</button>
-    <span class="sub" style="align-self:end">A股 6 位代码按首位自动加 sh/sz；指数建议直接写 sh000300 形式；港股写 0700 或 0700.HK 均可</span>
-  </div>
-  <div id="wlBody"><span class="sub">加载中…</span></div>
-  <div class="sub" style="margin-top:8px">已持仓自选 ETF/股票：请在下表“持仓%”填写相对该自选账户的仓位，AI 会据此判断何时减仓或卖出。</div>
-</section>
-
 <section class="plansec" id="aiSec">
   <div class="shead">
     <h2>AI 交易指令</h2>
@@ -225,42 +209,43 @@
 
 <section class="strategy" id="secA">
   <div class="shead">
-    <h2>A · 波动红利 — TQQQ 波动率目标 + 趋势闸门</h2>
+    <h2>A · 波动红利 — 美股动态 ETF 池</h2>
     <span class="chip" id="chipA">加载中…</span>
-    <span class="sub">美股 · 日级信号次日执行</span>
+    <span class="sub">美股 · 用户池 1～10 只 · 日级信号次日执行</span>
     <button class="doc-btn" id="docBtnA" onclick="toggleDoc('A')">策略详解</button>
   </div>
   <div class="strategy-doc" id="docA"><div class="doc-inner"><div class="doc-box">
-    <h4>一、为什么选这个标的</h4>
-    <p>TQQQ 是<strong>纳指100 三倍杠杆 ETF</strong>：纳指长期趋势向上，但三倍杠杆在剧烈波动中会产生"波动损耗"——涨跌同样的幅度，高波动路径下复利反而受损。本策略赚的就是<b>波动率溢价</b>：用信号源 QQQ（一倍、无杠杆）的 20 日实现波动率动态控制 TQQQ 的仓位，<b>市场平静时放大杠杆吃趋势，市场狂躁时自动降杠杆躲损耗</b>。趋势方向由 SMA200 闸门判断，牛熊分界之上才允许持仓。</p>
+    <h4>一、个性化候选池如何工作</h4>
+    <p>用户可在交易计划 A 中维护 <b>1～10 只美股 ETF</b>。系统逐只使用该资产自身价格计算 SMA 趋势、20/40 日实现波动和 60 日风险调整动量；每日仅在通过趋势资格的候选中选择分数最高的一只。所有候选均不合格时转为现金。</p>
     <h4>二、买入条件与触发时机</h4>
     <ul>
-      <li><b>前提：趋势闸门开启</b> —— QQQ 收盘价站在 200 日均线上方；跌破则无论波动多低都不持仓；</li>
-      <li><b>目标仓位公式</b>：<code>仓位 = min(100%, 35% ÷ 实现波动率)</code>。实现波动为最近 20 日日收益率标准差年化。举例：年化波动 17.5% → 满仓 100%；35% → 半仓 50%；达到 70% 以上 → 自动空仓；</li>
+      <li><b>趋势与排名</b>：每只 ETF 必须站上自身 SMA，合格者按 60 日风险调整动量排序并选 Top1；</li>
+      <li><b>目标仓位公式</b>：<code>仓位 = min(100%, 目标波动 ÷ 选中资产40日实现波动)</code>，所有计算均使用该候选自身行情；</li>
       <li><b>执行节奏</b>：每日收盘计算一次信号，次日开盘附近按目标仓位调整即可，无需盯盘；</li>
       <li><b>防磨损机制（滞回带）</b>：目标仓位变化不足 <code>10 个百分点</code>时不动作，避免频繁小额调仓产生摩擦成本。</li>
     </ul>
     <h4>三、卖出规则</h4>
     <ul>
-      <li><b>趋势失效退出（核心止损）</b>：QQQ 收盘跌破 SMA200 → 闸门关闭，强制清仓全部 TQQQ，直至重新站上均线；</li>
-      <li><b>波动退出（等效止损）</b>：实现波动升到 70% 年化以上时目标权重归零，自动退出——不需要人为设定止损线，波动本身会把你带出危险区；</li>
-      <li><b>无固定止盈</b>：只要"闸门开 + 低波动"两个条件持续成立就一直持有；上涨途中波动抬升会使权重逐步回落，相当于<b>越涨越自动锁定利润</b>；</li>
-      <li>卖出后的资金以现金形式等待下一次买入条件成立。</li>
+      <li><b>趋势失效退出</b>：当前资产失去资格后切换到新的合格 Top1；全部不合格则转为现金；</li>
+      <li><b>波动降仓</b>：选中资产自身实现波动抬升时，目标仓位按公式自动下降；</li>
+      <li><b>无固定止盈</b>：只要趋势资格仍成立就继续持有；波动上升只会按目标波动公式降低风险敞口，<b>不保证锁定利润</b>；</li>
+      <li>卖出后的资金以现金形式等待下一次买入条件成立。回测按调仓名义金额计入 <code>15bp</code> 成本。</li>
     </ul>
     <h4>四、页面指标怎么读</h4>
     <div class="doc-cols">
       <ul>
         <li><b>标题旁状态 chip</b>：「仓位 X% · 波动 Y% · 闸门开/关」是当前最新信号一览；仓位 ≥60% 标红、≤5% 标绿、中间为黄；</li>
-        <li><b>策略收益 / 基准</b>：基准是<b>同期 TQQQ 买入持有</b>。"跑赢 ✓"说明择时与控波动带来了超额收益；</li>
+        <li><b>策略收益 / 基准</b>：主基准优先使用默认核心资产，若其行情不可用则退化为首个有效候选；"跑赢 ✓"说明动态择时与控波动带来了超额收益；</li>
         <li><b>策略年化（CAGR）</b>：几何平均年化增速，跨窗口对比时看它比看总收益更公平；</li>
       </ul>
       <ul>
         <li><b>最大回撤</b>：净值从峰值到谷底的最大跌幅，衡量最痛时刻；策略应显著小于基准；</li>
         <li><b>Sharpe</b>：每承受 1 单位波动换来多少收益，长期 &gt;1 属优秀；</li>
-        <li><b>净值曲线</b>：红线=策略、灰线=基准，起点都归一为 1；下方回撤图越浅越好；</li>
+        <li><b>净值曲线</b>：红色实线=策略、灰色虚线=明确标注名称的基准，起点都归一为 1；悬停任一交易日可查看策略/基准净值及当日目标持仓；下方回撤图越浅越好；</li>
         <li><b>窗口切换</b>：全历史 / 近3年 / 近1年 / 2026-06以来 四个观察期；参数区可改波动率目标与 SMA 窗口重跑回测。</li>
       </ul>
     </div>
+    <p class="sub"><b>风险提示：</b>动态候选池并不等于自动验证 ETF 质量。请优先选择流动性充足、上市历史覆盖参数窗口、产品类型与市场代码正确的 ETF。均线策略在震荡市可能反复触发，动量可能突然反转；参数、交易成本、滑点、汇率与样本外表现都可能使实盘结果偏离回测，历史收益不代表未来。</p>
   </div></div></div>
   <div class="tabs" id="tabsA"></div>
   <div id="bodyA"></div>
@@ -268,6 +253,8 @@
     <div><label>波动率目标 (年化)</label><input id="pA_tv" type="number" min="0.05" max="1.50" step="0.01" value="0.35"></div>
     <div><label>趋势闸门 SMA</label><input id="pA_tw" type="number" min="20" max="500" step="1" value="200"></div>
     <button onclick="rerun('A')">应用并重跑</button>
+    <div><label>自定义起始日期</label><input type="date" id="cust_A"></div>
+    <button onclick="applyCustom('A')">从此日期起算</button>
   </div>
 </section>
 
@@ -275,23 +262,24 @@
   <div class="shead">
     <h2>B · 周期红利 — A股周度动量轮动</h2>
     <span class="chip" id="chipB">加载中…</span>
-    <span class="sub">创业板指 / 沪深300 / 上证红利 / 国债ETF</span>
+    <span class="sub">用户自定义风险候选池（最多10只） / 国债ETF为系统防御资产</span>
     <button class="doc-btn" id="docBtnB" onclick="toggleDoc('B')">策略详解</button>
   </div>
   <div class="strategy-doc" id="docB"><div class="doc-inner"><div class="doc-box">
-    <h4>一、为什么选这四个标的</h4>
-    <p>A股的典型特征是<b>风格周期轮动</b>：成长与价值、大盘与小盘的领涨期交替出现，没有哪类资产能一直赢。候选池因此覆盖三种互补风格——<b>创业板指（159915，周期成长）</b>利率敏感、弹性最大；<b>沪深300（510300，大盘核心）</b>；<b>上证红利（510880，红利价值）</b>低估值高股息、跌市里相对抗揍。第四只<b>国债ETF（511010）</b>不是候选而是"避风港"：所有风险资产都走坏时的去处。全部用指数 ETF，规避个股暴雷与退市风险。</p>
+    <h4>一、个性化候选池如何工作</h4>
+    <p>A股的典型特征是<b>风格周期轮动</b>。用户可在交易计划 B 中维护 <b>1～10 只A股场内ETF</b>作为风险候选池；系统不会再为所有用户使用同一组固定标的。候选池决定“从哪些ETF中选”，你设置的均线闸门决定逐只ETF是否具备趋势资格，风险调整动量再决定最终 Top1。</p>
+    <p><b>国债ETF（511010）</b>是固定系统防御资产，不占10只额度，也不参与风险候选排名；当用户池内所有ETF均未通过趋势闸门时，策略自动转入国债ETF。候选池变化会触发完整重算，因此不同用户池、不同 SMA 参数会产生不同资格集合、回测曲线和持仓推荐。</p>
     <h4>二、买入条件与触发时机</h4>
     <ul>
       <li><b>决策时点固定</b>：每周<b>最后一个交易日收盘后</b>计算一次信号，次日执行；一周只动一次，其余时间不盯盘；</li>
-      <li><b>打分规则</b>：<code>分数 = 60日涨幅 ÷ 60日日波动 × √252</code>，即<b>风险调整后动量</b>——涨得多的未必入选，还要涨得"稳"；</li>
-      <li><b>入围门槛</b>：只有收盘价站上 <code>40 日均线</code>的指数才有候选资格（绝对趋势过滤）；</li>
-      <li><b>买入动作</b>：在入围者中选分数最高的一只，<b>全仓</b>其对应 ETF；三只全部不合格则不买任何风险资产（见下方卖出规则）。</li>
+      <li><b>打分规则</b>：<code>分数 = 180日涨幅 ÷ 60日日波动 × √252</code>，即<b>风险调整后动量</b>——涨得多的未必入选，还要涨得"稳"；</li>
+      <li><b>入围门槛</b>：只有收盘价站上当前配置的均线闸门（默认 <code>60 日</code>）才有候选资格；趋势过滤负责判断“能不能买”，动量排名负责判断“优先买谁”；</li>
+      <li><b>买入动作</b>：在入围者中选分数最高的一只，<b>全仓</b>该 ETF；全部不合格则不买任何风险资产（见下方卖出规则）。</li>
     </ul>
     <h4>三、卖出规则</h4>
     <ul>
-      <li><b>系统性防御退出</b>：创业板指、沪深300、上证红利<b>全部跌破 40 日均线</b>（或无有效候选）→ 卖出所持 ETF，整仓转入国债 ETF 避险。这是策略的全局止损：市场进入系统性下跌时你手里拿的是债；</li>
-      <li><b>轮动换仓</b>：持仓标的被分数更高的候选替代 → 换到新最优。换手成本按 <code>15bp/次</code>计入回测，收益是扣费后的真实水平；</li>
+      <li><b>系统性防御退出</b>：用户池内风险 ETF <b>全部跌破当前均线闸门</b>（或无有效候选）→ 卖出所持风险 ETF，整仓转入国债 ETF 避险。这是策略的全局止损；</li>
+      <li><b>轮动换仓</b>：持仓标的被分数更高的候选替代 → 换到新最优；挑战者的归一化分数优势需<b>超过 10%</b> 才触发换仓（缓冲带，负动量阶段同样适用）。回测按调仓名义金额计入 <code>15bp</code> 成本；</li>
       <li><b>无固定止盈止损百分比</b>：动量衰减会自然表现为分数落后，由轮动机制自动完成"止盈换仓"，避免人为情绪干扰；</li>
       <li>注意决策只在每周五（或该周最后交易日）收盘生成，盘中涨跌不影响本周持仓。</li>
     </ul>
@@ -303,59 +291,64 @@
         <li><b>年化 / 最大回撤 / Sharpe</b>：口径与 A/C 一致；防御机制应主要体现在回撤显著小于基准；</li>
       </ul>
       <ul>
+        <li><b>净值图多基准</b>：除默认沪深300基准外，还可对比用户风险候选池内每只ETF的同期买入持有曲线；补充曲线默认隐藏，点击图例可逐条显示或关闭；</li>
         <li><b>近期轮动记录表</b>：最近 12 次周度决策的日期、选中资产与原因（"动量最优且在均线上方"/"转入防御"），可核对换仓节奏；</li>
         <li><b>本周持仓面板</b>：选中资产、对应 ETF、入选原因、决策日；</li>
-        <li><b>参数区</b>：动量窗口（默认60日）与均线闸门（默认40日）可调并重跑回测；窗口切换同 A/C 四档。</li>
+        <li><b>参数区</b>：动量窗口（默认180日）与均线闸门（默认60日）可调并重跑回测；窗口切换同 A/C 四档。</li>
       </ul>
     </div>
+    <p class="sub"><b>风险提示：</b>候选池应避免流动性不足、上市时间过短或产品类型错误的 ETF。趋势过滤在震荡市会产生假信号，动量轮动也可能遭遇风格突变和动量崩溃；固定国债 ETF 仍有利率与净值波动风险。参数敏感性、交易成本、滑点和样本外退化均需单独验证。</p>
   </div></div></div>
   <div class="tabs" id="tabsB"></div>
   <div id="bodyB"></div>
   <div class="params">
-    <div><label>动量窗口 (日)</label><input id="pB_mom" value="60"></div>
-    <div><label>均线闸门 (日)</label><input id="pB_ma" value="40"></div>
+    <div><label>动量窗口 (日)</label><input id="pB_mom" type="number" min="20" max="500" step="1" value="180"></div>
+    <div><label>均线闸门 (日)</label><input id="pB_ma" type="number" min="20" max="500" step="1" value="60"></div>
     <button onclick="rerun('B')">应用并重跑</button>
     <span class="sub">每周最后交易日收盘决策，次日执行；成本 15bp/换手</span>
+    <div><label>自定义起始日期</label><input type="date" id="cust_B"></div>
+    <button onclick="applyCustom('B')">从此日期起算</button>
   </div>
 </section>
 
 <section class="strategy" id="secC">
   <div class="shead">
-    <h2>C · 波动红利 — 恒指2x (7200.HK) 波动率目标 + 趋势闸门</h2>
+    <h2>C · 波动红利 — 港股动态 ETF 池</h2>
     <span class="chip" id="chipC">加载中…</span>
-    <span class="sub">港股 · 信号源与基准 2800.HK 盈富基金</span>
+    <span class="sub">港股 · 用户池 1～10 只 · 日级信号次日执行</span>
     <button class="doc-btn" id="docBtnC" onclick="toggleDoc('C')">策略详解</button>
   </div>
   <div class="strategy-doc" id="docC"><div class="doc-inner"><div class="doc-box">
-    <h4>一、为什么选这个标的</h4>
-    <p>与策略 A 同一套"波动率溢价"框架，移植到港股：<b>7200.HK（南方两倍恒指 ETF）</b>提供两倍杠杆敞口，<b>2800.HK（盈富基金，恒指一倍）</b>作为信号源与业绩基准。用一倍指数而非杠杆品本身来计算波动率和趋势，是因为它的历史更长、价格更"干净"，信号更稳定；基准选 2800.HK 则回答一个朴素问题——"折腾一圈有没有比直接买盈富基金更强"。恒指长期波动高于纳指，所以目标波动放宽到 <code>40%</code>（A 是 35%），避免频繁触发空仓。</p>
+    <h4>一、个性化候选池如何工作</h4>
+    <p>用户可在交易计划 C 中维护 <b>1～10 只港股 ETF</b>。每只资产都用自身行情计算 SMA 趋势、20/40 日实现波动和 60 日风险调整动量；每日从趋势合格者中选择 Top1，全部不合格时转为现金。</p>
     <h4>二、买入条件与触发时机</h4>
     <ul>
-      <li><b>前提：趋势闸门开启</b> —— 恒指（2800.HK 口径）收盘价在 200 日均线上方；</li>
-      <li><b>目标仓位公式</b>：<code>仓位 = min(100%, 40% ÷ 实现波动率)</code>（20 日实现波动年化）。波动 20% → 满仓；40% → 半仓；80% 以上 → 空仓；</li>
-      <li><b>执行节奏</b>：日级信号次日执行；仓位变化不足 <code>10 个百分点</code>不动手（滞回带防磨损），与 A 相同；</li>
+      <li><b>趋势与排名</b>：每只候选使用自身价格判断 SMA 趋势资格，合格者按 60 日风险调整动量排序并选 Top1；</li>
+      <li><b>目标仓位公式</b>：<code>仓位 = min(100%, 目标波动 ÷ 选中资产40日实现波动)</code>，并展示该资产 20 日波动用于观察短期变化；</li>
+      <li><b>执行节奏</b>：日级信号次日执行；同一持仓的目标仓位变化不足 <code>10 个百分点</code>不动作（滞回带防磨损），与 A 相同；</li>
       <li><b>交易时段提示</b>：港股中午不休市但分上下两节，计划页会按港交所时段显示盘中/闭盘状态。</li>
     </ul>
     <h4>三、卖出规则</h4>
     <ul>
-      <li><b>趋势失效退出（核心止损）</b>：恒指收盘跌破 SMA200 → 清仓 7200.HK，直至重新站上；</li>
-      <li><b>波动退出（等效止损）</b>：实现波动升至 80% 年化以上时目标权重归零自动离场；</li>
-      <li><b>无固定止盈</b>：条件持续成立即持有，波动抬升时权重自动回落锁利；</li>
+      <li><b>趋势失效退出</b>：当前资产失去资格后切换至新的合格 Top1；用户池全部不合格时转为现金；</li>
+      <li><b>波动降仓</b>：选中资产自身 40 日实现波动抬升时，目标权重按公式自动下降；</li>
+      <li><b>无固定止盈</b>：趋势资格持续成立即持有；波动抬升时权重自动回落，但该机制只控制风险敞口，<b>不保证锁定利润</b>；</li>
       <li><b>港股特有注意</b>：无涨跌停限制，极端行情波动可能一步到位——这也是本策略用每日信号而非周信号的原因之一；ETF 按<b>每手手数</b>交易，实际执行请按手数取整。</li>
     </ul>
     <h4>四、页面指标怎么读</h4>
     <div class="doc-cols">
       <ul>
         <li><b>标题旁状态 chip</b>：「仓位 X% · 波动 Y% · 闸门开/关」，口径与 A 完全一致；</li>
-        <li><b>策略收益 / 基准</b>：基准是<b>同期 7200.HK 买入持有</b>；想对比"不如直接买盈富"可参考 C 与 A/B 的横向差距；</li>
-        <li><b>年化 / 最大回撤 / Sharpe</b>：同前。恒指近十年长期震荡，本策略的价值主要看回撤压缩幅度；</li>
+        <li><b>策略收益 / 基准</b>：主基准优先使用默认核心资产，行情不可用时退化为首个有效候选；</li>
+        <li><b>年化 / 最大回撤 / Sharpe</b>：口径与 A 一致，重点观察动态切换与现金防守对回撤的压缩效果；</li>
       </ul>
       <ul>
-        <li><b>净值曲线</b>：红=策略、灰=7200.HK 基准；回撤图越浅越好；</li>
-        <li><b>最新信号面板</b>：目标仓位 / 实现波动 / 趋势闸门 / 信号日；</li>
+        <li><b>净值曲线</b>：红色实线为策略，灰色虚线为主基准；用户池每只有效 ETF 都有独立买入持有补充曲线，默认隐藏，可点击图例显示；悬停可查看当日实际选中 ETF 与现金仓位；</li>
+        <li><b>最新信号面板</b>：实际选中 ETF / 目标仓位 / 20、40 日实现波动 / 趋势闸门 / 信号日；</li>
         <li><b>参数区</b>：波动率目标（默认 0.40）与 SMA 窗口（默认200）可调重跑。</li>
       </ul>
     </div>
+    <p class="sub"><b>风险提示：</b>港股 ETF 需额外核验产品类型、成交活跃度、上市历史、交易币种和每手股数。均线与动量在震荡或快速反转行情中可能失效；无涨跌停、汇率变化、买卖价差、滑点与免费数据源延迟都可能使实盘偏离回测。</p>
   </div></div></div>
   <div class="tabs" id="tabsC"></div>
   <div id="bodyC"></div>
@@ -363,11 +356,13 @@
     <div><label>波动率目标 (年化)</label><input id="pC_tv" type="number" min="0.05" max="1.50" step="0.01" value="0.40"></div>
     <div><label>趋势闸门 SMA</label><input id="pC_tw" type="number" min="20" max="500" step="1" value="200"></div>
     <button onclick="rerun('C')">应用并重跑</button>
-    <span class="sub">交易标的 7200.HK 南方两倍恒指；港股无涨跌停但有手数限制</span>
+    <span class="sub">候选池在交易计划中维护；港股无涨跌停但有手数限制</span>
+    <div><label>自定义起始日期</label><input type="date" id="cust_C"></div>
+    <button onclick="applyCustom('C')">从此日期起算</button>
   </div>
 </section>
 
-<footer>回测含成本假设，历史收益不代表未来 · 节假日计划仅供参考 · 数据源 Yahoo Finance / 新浪财经（免费） · 本机运行</footer>
+<footer>回测按调仓名义金额计入 15bp 成本，历史收益不代表未来 · 免费行情可能延迟或缺失 · 数据源 Yahoo query1/query2 / 新浪 / 腾讯 / Stooq / 本地缓存 · 本机运行</footer>
 <div id="toast"></div>
 
 <script src="/static/app.js"></script>

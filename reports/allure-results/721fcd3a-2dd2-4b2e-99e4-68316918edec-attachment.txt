@@ -1,0 +1,1 @@
+{'us_qqq_vt': 'ok', 'us_spy_dma': 'ok', 'us_qld_vt': 'ok', 'a_industry_rot': 'ok', 'a_gold_red_rot': 'ok', 'hk_vt': 'ok', 'hk_tech_dma': 'ok', 'safe_gold_dma': 'ok', 'safe_rot': 'ok'}

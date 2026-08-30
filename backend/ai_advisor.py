@@ -28,7 +28,6 @@ import requests
 
 from . import data_feed as dfd
 from . import advisor
-from .strategies import ASSETS_B
 
 ROOT = Path(__file__).resolve().parent.parent
 CFG_FILE = ROOT / "data_cache" / "ai_config.json"
@@ -223,13 +222,7 @@ SNAPSHOT_ASSETS = [
     ("TQQQ", "us", "TQQQ 纳指3x", "策略A交易标的"),
     ("2800.HK", "hk", "盈富基金(2800.HK)", "恒指代理/策略C信号源"),
     ("7200.HK", "hk", "恒指2x(7200.HK)", "策略C交易标的"),
-    ("sz399006", "a", "创业板指", "策略B候选信号源"),
     ("sh000300", "a", "沪深300", "策略B基准信号源"),
-    ("sh000015", "a", "上证红利", "策略B候选信号源"),
-    ("sz159915", "a", "159915 创业板ETF", "策略B交易标的"),
-    ("sh510300", "a", "510300 沪深300ETF", "策略B交易标的"),
-    ("sh510880", "a", "510880 红利ETF", "策略B交易标的"),
-    ("sh511010", "a", "511010 国债ETF", "策略B交易标的"),
 ]
 
 
@@ -257,9 +250,18 @@ def _snap(px: pd.Series) -> dict | None:
     }
 
 
-def market_snapshot(data_source: str = "auto") -> list[dict]:
+def market_snapshot(
+    data_source: str = "auto",
+    extra_assets: list[tuple[str, str, str, str]] | None = None,
+    include_defaults: bool = True,
+) -> list[dict]:
     out = []
-    for code, mkt, name, note in SNAPSHOT_ASSETS:
+    assets = [*(SNAPSHOT_ASSETS if include_defaults else []), *(extra_assets or [])]
+    seen: set[str] = set()
+    for code, mkt, name, note in assets:
+        if code in seen:
+            continue
+        seen.add(code)
         try:
             # Current adapters: Yahoo covers US/HK; Sina covers CN. auto chooses by market.
             # Explicit source is recorded; unsupported market/source combinations fall back safely.
@@ -284,23 +286,43 @@ def market_snapshot(data_source: str = "auto") -> list[dict]:
 # ---------------------------------------------------------------------------
 # Context assembly
 # ---------------------------------------------------------------------------
-KNOWN_ASSETS = {
-    "A": ["TQQQ"],
-    "B": [v["etf"] for v in ASSETS_B.values()],
-    "C": ["7200.HK"],
-}
+def _strategy_ai_assets(summary: dict, sid: str) -> tuple[list[str], list[tuple[str, str, str, str]], dict]:
+    strategy = summary.get(sid) or {}
+    pool = strategy.get("pool") or []
+    market = {"A": "us", "B": "a", "C": "hk"}[sid]
+    known: list[str] = []
+    snapshots: list[tuple[str, str, str, str]] = []
+    for item in pool:
+        label = str(item.get("etf") or "").strip()
+        code = str(item.get("code") or "").strip()
+        if not label or not code:
+            continue
+        known.append(label)
+        snapshots.append((code, market, label, f"策略{sid}用户候选"))
+    safe = (strategy.get("safe_asset") or {}) if sid == "B" else {}
+    safe_label = str(safe.get("etf") or "").strip()
+    safe_code = str(safe.get("code") or "").strip()
+    if safe_label and safe_code:
+        known.append(safe_label)
+        snapshots.append((safe_code, "a", safe_label, "策略B系统防御资产"))
+    state = {"risk_pool": pool, "failed_assets": strategy.get("failed_assets") or [],
+             "pool_limit": strategy.get("pool_limit", 10)}
+    if sid == "B":
+        state.update({"safe_asset": safe,
+                      "ma_window": (strategy.get("current") or {}).get("ma_window"),
+                      "mom_window": (strategy.get("current") or {}).get("mom_window")})
+    else:
+        state.update({"trend_window": (strategy.get("current") or {}).get("trend_window"),
+                      "target_vol": (strategy.get("current") or {}).get("target_vol")})
+    return known, snapshots, state
+
+
+def _b_ai_assets(summary: dict) -> tuple[list[str], list[tuple[str, str, str, str]], dict]:
+    return _strategy_ai_assets(summary, "B")
 
 
 def _market_key(market: str) -> str:
     return {"A股": "CN", "美股": "US", "港股": "HK"}.get(market, market)
-
-
-def _watchlist_assets() -> list[str]:
-    try:
-        from . import watchlist as wl
-        return [str(row["code"]) for row in wl.load_items()]
-    except Exception:  # noqa: BLE001
-        return []
 
 
 def build_context(summary: dict, plan_payload: dict, holdings: dict | None = None,
@@ -335,40 +357,20 @@ def build_context(summary: dict, plan_payload: dict, holdings: dict | None = Non
             }
 
     effective_source = data_source if data_source in SOURCE_OPTIONS else "auto"
-    snaps = market_snapshot(effective_source)
-    watch_assets: list[str] = []
-    watch_holdings = holdings.get("WATCH", {}) if isinstance(holdings, dict) else {}
-    try:  # user watchlist becomes an explicit, tradeable analysis pool
-        from . import watchlist as wl
-        for row in wl.snapshots():
-            market = {"a": "CN", "us": "US", "hk": "HK"}[row["market"]]
-            if market not in selected:
-                continue
-            code = row["code"]
-            watch_assets.append(code)
-            entry = {"name": row.get("name") or code, "code": code,
-                     "market": market, "strategy": "WATCH",
-                     "currency": {"CN": "CNY", "US": "USD", "HK": "HKD"}[market],
-                     "holding_pct": float(watch_holdings.get(code, 0.0)),
-                     "note": "用户自选·可分析持仓卖出/减仓/持有"}
-            s = row.get("snap")
-            if s:
-                entry.update(s)
-            else:
-                entry["unavailable"] = row.get("error", "无数据")
-            snaps.append(entry)
-    except Exception:  # noqa: BLE001
-        pass
 
-    # Restrict strategy pools and sessions to the user's selected markets.
-    selected_sids = {"US": "A", "CN": "B", "HK": "C"}
+    # Restrict strategy pools, snapshots and sessions before context assembly.
     sessions = {sid: value for sid, value in sessions.items()
                 if _market_key(value["market"]) in selected}
     rule_targets = {sid: value for sid, value in rule_targets.items() if sid in sessions}
     rule_rationale = {sid: value for sid, value in rule_rationale.items() if sid in sessions}
     perf = {sid: value for sid, value in perf.items() if sid in sessions}
-    known = {sid: value for sid, value in KNOWN_ASSETS.items() if sid in sessions}
-    known["WATCH"] = watch_assets
+    known, snapshots, strategy_pools = {}, [], {}
+    for sid in sessions:
+        sid_known, sid_snapshots, sid_state = _strategy_ai_assets(summary, sid)
+        known[sid] = sid_known
+        snapshots.extend(sid_snapshots)
+        strategy_pools[sid] = sid_state
+    snaps = market_snapshot(effective_source, snapshots, include_defaults=False)
     selected_views = [v for v in (views or DEFAULT_VIEWS) if v in VIEW_LABELS]
     news = fetch_news(source=news_source, markets=selected)
     return {
@@ -385,6 +387,8 @@ def build_context(summary: dict, plan_payload: dict, holdings: dict | None = Non
         "rule_baseline_rationale": rule_rationale,
         "rule_backtest_performance": perf,
         "known_assets": known,
+        "strategy_user_pools": strategy_pools,
+        "strategy_b_user_pool": strategy_pools.get("B"),
         "market_snapshot": [s for s in snaps if s.get("market") in selected],
         "news_recent": news,
     }
@@ -394,14 +398,14 @@ def build_context(summary: dict, plan_payload: dict, holdings: dict | None = Non
 # Prompt + LLM call (OpenAI-compatible endpoint)
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """你是一名严谨的中低频量化交易决策助手，服务一位上班族个人投资者。
-框架：三个规则策略构成风险基线——A 美股TQQQ波动率目标+SMA200闸门、B A股周度动量轮动、C 港股恒指2x波动率目标。全部日级、收盘出信号次日开盘附近执行，不盯盘。
+框架：三个规则策略构成风险基线——A 美股用户 ETF 池动态趋势/动量/波动率目标、B A股用户 ETF 池周度动量轮动、C 港股用户 ETF 池动态趋势/动量/波动率目标。收盘出信号、次日开盘附近执行，不盯盘。
 
 你的任务：只分析 selected_markets 中的市场，综合【用户持仓】【市场技术快照】【规则基线目标与回测表现】【最新新闻】，输出本次执行日的具体仓位指令。analysis_config 中的 views 是本次用户要求的分析视角，必须分别覆盖；data_source/news_source 是本次数据来源口径，禁止声称使用未提供的数据。
 
 市场隔离（最高优先级）：selected_markets 之外的市场一律视为不存在。输出中的任何字段——包括 market_view 的键、decisions、reason、deviation_note、risk_notes——都不得出现未选市场的名称、指数或行情解读；也不要输出"XX 市场未纳入本次范围"之类的解释性文字。若新闻里出现未选市场相关的宏观消息，忽略之；只有当其影响已经体现在所选市场的数据中时，才可基于所选市场自身数据做判断。
 
 硬性约束：
-1. asset 必须从 known_assets 对应列表中选取（现金不用输出，自动=100-合计）。WATCH 是用户自选池，允许对自选股票/ETF 给出 buy|sell|hold，并优先结合 holdings_pct 判断是否应卖出或减仓。
+1. asset 必须从 known_assets 对应策略列表中选取（现金不用输出，自动=100-合计）。A/C 只能从各自用户候选池推荐；B 只能从用户风险候选池和系统防御资产推荐。strategy_user_pools 给出各策略实际参数、逐标的资格状态和行情失败项。
 2. 每个策略的 target_pct 合计不得超过 100；单个资产 0~100。
 3. 相对规则基线偏离尽量不超过 ±30 个百分点；确有重大风险事件理由时可突破，但须在 deviation_note 说明。
 4. 新闻仅作辅助判断：区分噪音与实质影响（如利率决议、地缘冲突、行业监管），个股新闻对指数级ETF影响有限。
@@ -412,7 +416,7 @@ SYSTEM_PROMPT = """你是一名严谨的中低频量化交易决策助手，服�
 
 输出 schema：
 {"market_view": {"<仅填所选市场的键，如 US/CN/HK>": "一句话"},
- "decisions": [{"strategy": "A|B|C|WATCH", "asset": "名称或代码", "target_pct": 数字,
+ "decisions": [{"strategy": "A|B|C", "asset": "名称或代码", "target_pct": 数字,
                 "action": "buy|sell|hold", "reason": "一句话",
                 "deviation_note": "与基线差异说明",
                 "price_mode": "market_open|limit|not_set",
@@ -527,7 +531,7 @@ def apply_guardrails(parsed: dict, rule_targets: dict, known_assets: dict | None
     for d in raw_list:
         sid = str(d.get("strategy", "")).strip().upper()
         asset = str(d.get("asset", "")).strip()
-        if sid not in ("A", "B", "C", "WATCH"):
+        if sid not in ("A", "B", "C"):
             warnings.append(f"丢弃未知策略条目: {d}")
             continue
         if asset and asset not in known_assets.get(sid, []):

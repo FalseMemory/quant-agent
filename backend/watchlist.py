@@ -103,13 +103,45 @@ def _gtimg_name(gt_code: str) -> str | None:
 
 
 def fetch_name(item: dict) -> str | None:
+    """Resolve a security name without requiring long historical data."""
     if item["market"] == "a":
         return _gtimg_name(item["code"])
     if item["market"] == "hk":
         # gtimg uses 5-digit HK codes: hk00700
         digits = item["code"].split(".")[0]
-        return _gtimg_name("hk" + str(int(digits)).zfill(5))
-    return None  # US: symbol doubles as display name
+        name = _gtimg_name("hk" + str(int(digits)).zfill(5))
+        if name:
+            return name
+    if item["market"] == "us":
+        name = _gtimg_name("us" + item["code"].upper())
+        if name:
+            return name
+    try:
+        from . import data_feed as dfd
+        return dfd.get_quote(item["code"], item["market"]).get("name")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def resolve_asset_names(settings: dict[str, dict]) -> dict[str, dict]:
+    """Fill only blank candidate names; user-entered names always win."""
+    out = json.loads(json.dumps(settings, ensure_ascii=False))
+    market_by_key = {"params_a": "us", "params_b": "a", "params_c": "hk"}
+    for key, market in market_by_key.items():
+        block = out.get(key) or {}
+        for asset in block.get("assets") or []:
+            current_name = str(asset.get("name") or "").strip()
+            # Older frontend versions stored the code itself when name was blank.
+            if current_name and current_name.upper() != str(asset["code"]).upper():
+                continue
+            item = {"code": asset["code"], "market": market}
+            asset["name"] = fetch_name(item) or asset["code"]
+            asset["name_resolved"] = asset["name"] != asset["code"]
+        if key == "params_b" and isinstance(block.get("safe_asset"), dict):
+            asset = block["safe_asset"]
+            if not str(asset.get("name") or "").strip():
+                asset["name"] = fetch_name({"code": asset["code"], "market": "a"}) or asset["code"]
+    return out
 
 
 def add(code: str, market: str = "auto") -> list[dict]:
@@ -131,13 +163,33 @@ def remove(code: str) -> list[dict]:
 
 
 def snapshot_one(item: dict) -> dict | None:
+    """Return rich history metrics, or a lightweight quote when history fails."""
     from . import data_feed as dfd
     from .ai_advisor import _snap
-    if item["market"] == "a":
-        px = dfd.get_a(item["code"], "20240101")["close"]
-    else:
-        px = dfd.get_us(item["code"], "1d", "2y")["close"]
-    return _snap(px)
+    history_error = None
+    try:
+        if item["market"] == "a":
+            px = dfd.get_a(item["code"], "20240101")["close"]
+        else:
+            px = dfd.get_us(item["code"], "1d", "2y")["close"]
+        snap = _snap(px)
+        if snap:
+            snap["source"] = "历史日线"
+            snap["quote_level"] = "full"
+            return snap
+    except Exception as exc:  # noqa: BLE001
+        history_error = str(exc)[:180]
+
+    quote = dfd.get_quote(item["code"], item["market"])
+    price = float(quote["price"])
+    prev = float(quote.get("prev_close") or price)
+    chg = round((price / prev - 1.0) * 100.0, 2) if prev else None
+    return {"close": round(price, 4), "chg_1d_pct": chg, "chg_5d_pct": None,
+            "chg_20d_pct": None, "realized_vol_20d_pct": None,
+            "vs_sma50_pct": None, "vs_sma200_pct": None,
+            "as_of": quote.get("as_of") or "最新快照", "source": quote.get("source"),
+            "quote_level": "light", "history_error": history_error,
+            "name": quote.get("name")}
 
 
 def snapshots() -> list[dict]:

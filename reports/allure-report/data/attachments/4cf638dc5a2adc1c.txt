@@ -1,0 +1,1 @@
+B avg_exposure = 100.0%

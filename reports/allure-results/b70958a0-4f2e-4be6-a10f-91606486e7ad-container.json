@@ -1,0 +1,1 @@
+{"uuid": "247613e4-cd4e-4469-94cb-f648709ff339", "children": ["d2814405-f7da-44d9-8796-a1ab88d8e0c7"], "befores": [{"name": "raw_curves", "status": "passed", "start": 1788085498134, "stop": 1788085498137}], "afters": [{"name": "raw_curves::<lambda>", "start": 1788085498146}], "start": 1788085498134, "stop": 1788085498146}

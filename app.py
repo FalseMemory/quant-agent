@@ -10,10 +10,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.engine import build_all
+from backend import engine
 from backend import advisor
 from backend import ai_advisor
 from backend import settings_store
-from backend import watchlist as wl_mod
+from backend import ext_strategy
+from backend import watchlist
 
 ROOT = Path(__file__).resolve().parent
 
@@ -72,6 +74,9 @@ def rerun(body: Params):
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
+    # Blank names are resolved only after code validation. Manual names are preserved.
+    candidate = watchlist.resolve_asset_names(candidate)
+
     for key, value in candidate.items():
         _STATE[key] = value
     st = _get_data(force=True)
@@ -88,6 +93,77 @@ def rerun(body: Params):
         _STATE["data"] = None
         return JSONResponse({"ok": False, "error": f"参数保存失败：{e}"}, status_code=500)
     return {"ok": True, "settings": saved, **st["data"]}
+
+
+# ------------------- extended instrument groups & strategies -------------------
+# Additive layer: independent of the core A/B/C path. A failure in any extended
+# strategy is contained to that strategy and never touches /api/summary.
+_EXT_STATE: dict = {"data": None}
+
+
+def _get_ext_data(force: bool = False):
+    if force or _EXT_STATE["data"] is None:
+        _EXT_STATE["data"] = ext_strategy.build_all_ext(settings_store.load_ext_settings())
+    return _EXT_STATE["data"]
+
+
+@app.get("/api/ext/summary")
+def ext_summary(force: bool = False):
+    data = _get_ext_data(force=force)
+    # NOTE: ext_meta() already carries a "strategies" key (registry metadata),
+    # so the per-strategy backtest payloads are returned under "results".
+    return {"ok": True, **ext_strategy.ext_meta(),
+            "settings": data["settings"], "results": data["strategies"]}
+
+
+class ExtBody(BaseModel):
+    strategy_id: str
+    enabled: bool | None = None
+    params: dict | None = None
+
+
+@app.post("/api/ext/rerun")
+def ext_rerun(body: ExtBody):
+    """Update (enable/params) ONE extended strategy, persist it, rebuild only that one."""
+    sid = body.strategy_id
+    if sid not in ext_strategy.EXT_STRATEGIES:
+        return JSONResponse({"ok": False, "error": "未知的扩展策略"}, status_code=400)
+    cfg = settings_store.load_ext_settings()
+    strategies = cfg.get("strategies") or {}
+    current = strategies.get(sid) or {}
+    enabled = bool(body.enabled) if body.enabled is not None else bool(current.get("enabled", True))
+    raw = body.params if body.params is not None else current.get("params")
+    try:
+        params = ext_strategy.validate_ext_params(sid, raw)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    strategies[sid] = {"enabled": enabled, "params": params}
+    try:
+        settings_store.save_ext_settings({**cfg, "strategies": strategies})
+    except (OSError, ValueError) as e:
+        return JSONResponse({"ok": False, "error": f"参数保存失败：{e}"}, status_code=500)
+
+    result = ext_strategy.build_one(sid, params, enabled)
+    data = _get_ext_data()
+    data["settings"]["strategies"][sid] = {"enabled": enabled, "params": params}
+    data["strategies"][sid] = result
+    return {"ok": True, "settings": data["settings"], "strategy": result}
+
+
+@app.get("/api/custom")
+def custom(sid: str, start: str):
+    """从指定日期起算的策略 vs 基准对比（起买模拟，含成本假设的回测曲线切片）。"""
+    st = _get_data()
+    if st["error"]:
+        return JSONResponse({"ok": False, "error": st["error"]}, status_code=500)
+    if sid not in ("A", "B", "C"):
+        return JSONResponse({"ok": False, "error": "未知策略"}, status_code=400)
+    try:
+        payload = engine.custom_window(sid, start)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    return {"ok": True, "sid": sid, "payload": payload}
 
 
 @app.get("/api/plan")
@@ -109,7 +185,12 @@ class HoldingsBody(BaseModel):
 
 @app.post("/api/holdings")
 def post_holdings(body: HoldingsBody):
-    saved = advisor.save_holdings(body.holdings)
+    try:
+        saved = advisor.save_holdings(body.holdings)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except OSError as exc:
+        return JSONResponse({"ok": False, "error": f"持仓保存失败：{exc}"}, status_code=500)
     return {"ok": True, "holdings": saved}
 
 
@@ -236,38 +317,6 @@ def ai_history_detail(decision_id: str):
     if not item:
         return JSONResponse({"ok": False, "error": "找不到该决策记录"}, status_code=404)
     return {"ok": True, "record": item}
-
-
-# --------------------------- user watchlist ---------------------------
-@app.get("/api/watchlist")
-def watchlist_get():
-    try:
-        return {"ok": True, "items": wl_mod.snapshots()}
-    except Exception as e:  # noqa: BLE001
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
-
-
-class WlCodeBody(BaseModel):
-    code: str
-    market: str = "auto"
-
-
-@app.post("/api/watchlist/add")
-def watchlist_add(body: WlCodeBody):
-    try:
-        items = wl_mod.add(body.code, body.market)
-    except wl_mod.WatchError as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-    return {"ok": True, "items": items}
-
-
-class WlRemoveBody(BaseModel):
-    code: str
-
-
-@app.post("/api/watchlist/remove")
-def watchlist_remove(body: WlRemoveBody):
-    return {"ok": True, "items": wl_mod.remove(body.code)}
 
 
 @app.get("/")

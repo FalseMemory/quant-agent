@@ -1,0 +1,1 @@
+[data_feed] WARN us_OLD_1d_5y: live sources failed (<lambda>: RuntimeError 全挂); serving STALE cache (~48.0h old)

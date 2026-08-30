@@ -1,0 +1,14 @@
+{
+  "params_a": {
+    "target_vol": 0.42,
+    "trend_window": 180
+  },
+  "params_b": {
+    "mom_window": 90,
+    "ma_window": 50
+  },
+  "params_c": {
+    "target_vol": 0.45,
+    "trend_window": 160
+  }
+}

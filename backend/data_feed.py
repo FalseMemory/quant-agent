@@ -70,8 +70,8 @@ def _period_cutoff(period: str) -> pd.Timestamp:
 # ---------------------------------------------------------------------------
 # US/HK: primary Yahoo v8 chart; fallbacks Sina US daily / Tencent HK kline
 # ---------------------------------------------------------------------------
-def _yahoo_chart(symbol: str, period: str) -> pd.DataFrame:
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+def _yahoo_chart_host(symbol: str, period: str, host: str) -> pd.DataFrame:
+    url = f"https://{host}/v8/finance/chart/{symbol}"
     params = {"interval": "1d", "range": period}
     r = _SESSION.get(url, params=params, timeout=30)
     r.raise_for_status()
@@ -87,6 +87,37 @@ def _yahoo_chart(symbol: str, period: str) -> pd.DataFrame:
         "volume": q["volume"],
     }, index=pd.to_datetime(ts, unit="s", utc=True))
     df = df[~df["close"].isna()].tz_convert("America/New_York").tz_localize(None)
+    return df[["open", "high", "low", "close", "volume"]]
+
+
+def _yahoo_chart(symbol: str, period: str) -> pd.DataFrame:
+    return _yahoo_chart_host(symbol, period, "query1.finance.yahoo.com")
+
+
+def _yahoo_chart_query2(symbol: str, period: str) -> pd.DataFrame:
+    """Second Yahoo chart host; useful when query1 is temporarily blocked."""
+    return _yahoo_chart_host(symbol, period, "query2.finance.yahoo.com")
+
+
+def _stooq_us_daily(symbol: str, period: str) -> pd.DataFrame:
+    """Stooq CSV fallback for ordinary US tickers (daily, no API key)."""
+    ticker = symbol.lower().replace(".", "-") + ".us"
+    r = _SESSION.get("https://stooq.com/q/d/l/", params={"s": ticker, "i": "d"}, timeout=30)
+    r.raise_for_status()
+    from io import StringIO
+    df = pd.read_csv(StringIO(r.text))
+    expected = {"Date", "Open", "High", "Low", "Close", "Volume"}
+    if df.empty or not expected.issubset(df.columns):
+        raise ValueError(f"stooq us empty/invalid: {r.text[:80]}")
+    df = df.rename(columns={"Date": "date", "Open": "open", "High": "high",
+                            "Low": "low", "Close": "close", "Volume": "volume"})
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date", "close"]).set_index("date")
+    for col in ("open", "high", "low", "close", "volume"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df[df.index >= _period_cutoff(period)]
+    if df.empty:
+        raise ValueError("stooq us empty after window slice")
     return df[["open", "high", "low", "close", "volume"]]
 
 
@@ -156,8 +187,8 @@ def _tencent_hk_daily(symbol: str, period: str) -> pd.DataFrame:
 def _us_sources(symbol: str) -> list:
     """Ordered fetchers for a symbol: Yahoo first, then a domestic mirror."""
     if symbol.upper().endswith(".HK"):
-        return [_yahoo_chart, _tencent_hk_daily]
-    return [_yahoo_chart, _sina_us_daily]
+        return [_yahoo_chart, _yahoo_chart_query2, _tencent_hk_daily]
+    return [_yahoo_chart, _yahoo_chart_query2, _sina_us_daily, _stooq_us_daily]
 
 
 def get_us(symbol: str, interval: str = "1d", period: str = "5y") -> pd.DataFrame:
@@ -248,14 +279,72 @@ def get_a(code: str, start: str = "20180101", end: str | None = None) -> pd.Data
     return df
 
 
+def _tencent_quote_code(symbol: str, market: str) -> str:
+    if market == "hk":
+        return _hk_code(symbol)
+    if market == "us":
+        return "us" + symbol.upper()
+    return symbol.lower()
+
+
+def _tencent_quote(symbol: str, market: str) -> dict:
+    code = _tencent_quote_code(symbol, market)
+    r = _SESSION.get("https://qt.gtimg.cn/q=" + code, timeout=10)
+    r.raise_for_status()
+    raw = r.text.split('="', 1)[1].rstrip('";')
+    parts = raw.split("~")
+    if len(parts) < 5 or not parts[1].strip():
+        raise ValueError(f"tencent quote({code}) invalid")
+    price = float(parts[3])
+    prev_close = float(parts[4])
+    if price <= 0:
+        raise ValueError(f"tencent quote({code}) has no price")
+    return {"price": price, "prev_close": prev_close, "name": parts[1].strip(),
+            "as_of": parts[30] if len(parts) > 30 and parts[30] else None,
+            "source": "腾讯行情"}
+
+
+def _yahoo_quote(symbol: str, market: str) -> dict:
+    errors = []
+    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+        try:
+            url = f"https://{host}/v8/finance/chart/{symbol}"
+            r = _SESSION.get(url, params={"interval": "1d", "range": "5d"}, timeout=15)
+            r.raise_for_status()
+            result = r.json()["chart"]["result"][0]
+            meta = result.get("meta") or {}
+            price = meta.get("regularMarketPrice")
+            prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+            if price is None:
+                closes = ((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+                closes = [x for x in closes if x is not None]
+                price = closes[-1] if closes else None
+                prev = prev or (closes[-2] if len(closes) > 1 else None)
+            if price is None:
+                raise ValueError("no price")
+            return {"price": float(price), "prev_close": float(prev or price),
+                    "name": (meta.get("longName") or meta.get("shortName") or "").strip() or None,
+                    "as_of": None, "source": "Yahoo Finance"}
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{host}: {type(exc).__name__}")
+    raise RuntimeError("; ".join(errors))
+
+
+def get_quote(symbol: str, market: str) -> dict:
+    """Lightweight cross-market quote/name lookup, independent from history."""
+    errors = []
+    for source in (_tencent_quote, _yahoo_quote):
+        try:
+            return source(symbol, market)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{source.__name__}: {str(exc)[:100]}")
+    raise RuntimeError(f"get_quote({symbol},{market}) all sources failed: {'; '.join(errors)}")
+
+
 def get_a_live(code: str) -> dict | None:
     """Live snapshot from gtimg quote service. Returns dict or None."""
     try:
-        r = _SESSION.get("https://qt.gtimg.cn/q=" + code, timeout=10)
-        # format: v_code="1~name~code~price~昨收~开盘~..."
-        raw = r.text.split('="', 1)[1].rstrip('";')
-        parts = raw.split("~")
-        return {"price": float(parts[3]), "prev_close": float(parts[4]), "name": parts[1]}
+        return _tencent_quote(code, "a")
     except Exception:
         return None
 

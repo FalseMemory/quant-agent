@@ -1,0 +1,1 @@
+{'us_qqq_vt': 'error', 'us_spy_dma': 'error', 'us_qld_vt': 'error', 'a_industry_rot': 'error', 'a_gold_red_rot': 'error', 'hk_vt': 'error', 'hk_tech_dma': 'error', 'safe_gold_dma': 'error', 'safe_rot': 'error'}

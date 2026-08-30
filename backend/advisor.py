@@ -25,7 +25,8 @@ MARKETS = {
           "assets": ["TQQQ"]},
     "B": {"label": "A股", "tz": ZoneInfo("Asia/Shanghai"),
           "sessions": [(9 * 60 + 25, 11 * 60 + 35), (12 * 60 + 55, 15 * 60 + 5)],
-          "assets": ["创业板ETF(159915)", "沪深300ETF(510300)", "红利ETF(510880)", "国债ETF(511010)"]},
+          "assets": ["创业板ETF(159915)", "沪深300ETF(510300)", "红利ETF(510880)",
+                     "黄金ETF(518880)", "国债ETF(511010)"]},
     "C": {"label": "港股", "tz": ZoneInfo("Asia/Hong_Kong"),
           "sessions": [(9 * 60 + 25, 12 * 60 + 5), (12 * 60 + 55, 16 * 60 + 10)],
           "assets": ["7200.HK"]},
@@ -104,15 +105,39 @@ def load_holdings() -> dict:
 
 
 def save_holdings(h: dict) -> dict:
+    if not isinstance(h, dict):
+        raise ValueError("持仓数据必须是对象")
     clean = {}
     for sid in ("A", "B", "C", "WATCH"):
         raw = h.get(sid, {})
-        vals = {k: max(0.0, min(100.0, float(v))) for k, v in raw.items() if k}
+        if not isinstance(raw, dict):
+            raise ValueError(f"策略{sid}持仓必须是对象")
+        vals = {}
+        for key, value in raw.items():
+            name = str(key or "").strip()
+            if not name:
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"策略{sid}的{name}持仓比例必须是数值") from exc
+            vals[name] = max(0.0, min(100.0, number))
         total = sum(vals.values())
         if total > 0:  # normalize to 100 so inputs stay consistent
             vals = {k: round(v * 100.0 / total, 1) for k, v in vals.items()}
         clean[sid] = vals
-    HOLDINGS_FILE.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp = HOLDINGS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        tmp.replace(HOLDINGS_FILE)
+    except PermissionError:
+        # Windows may briefly lock the destination; direct overwrite is safe here
+        # because the complete JSON has already been written to the temp file.
+        HOLDINGS_FILE.write_text(tmp.read_text(encoding="utf-8"), encoding="utf-8")
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
     return clean
 
 
@@ -156,9 +181,11 @@ def _asset_ref(label: str) -> dict | None:
         m = re.search(r"\b(\d{6})\b", label)      # 159915 创业板ETF
         if m:
             return wl_mod.normalize(m.group(1), "a")
-        if label.upper().endswith(".HK"):          # 7200.HK
-            return wl_mod.normalize(label, "hk")
-        return wl_mod.normalize(label, "us")       # TQQQ
+        hk = re.search(r"\b(\d{4,5}\.HK)\b", label.upper())
+        if hk:
+            return wl_mod.normalize(hk.group(1), "hk")
+        us = re.search(r"\b([A-Z][A-Z0-9.-]*)\b", label.upper())
+        return wl_mod.normalize(us.group(1) if us else label, "us")
     except wl_mod.WatchError:
         return None
 
@@ -176,12 +203,15 @@ def _attach_snapshots(actions: list[dict]) -> None:
             if snap:
                 a["ref"] = ref
                 a["snap"] = snap
-        except Exception:  # noqa: BLE001  — plan must not break on quote hiccups
-            pass
+        except Exception as exc:  # noqa: BLE001  — plan must not break on quote hiccups
+            a["ref"] = ref
+            a["quote_error"] = str(exc)[:180]
 
 
 def build_plan(data: dict, holdings: dict | None = None) -> dict:
     """data = engine build_all() output; returns per-strategy plan."""
+    from . import watchlist as wl_mod
+
     holdings = holdings or load_holdings()
     plans = {}
     now_utc = dt.datetime.now(dt.timezone.utc)
@@ -197,17 +227,46 @@ def build_plan(data: dict, holdings: dict | None = None) -> dict:
             target = {st["etf"]: 100.0}
             rationale = f"周度轮动选中 {st['pick_name']}：{st['reason']}（决策日 {st['decision_date']}）"
         else:
-            asset = "TQQQ" if sid == "A" else "7200.HK"
-            target = _target_a_c(st["exposure"], asset)
+            asset = st.get("etf") or "现金"
+            target = ({"现金": 100.0} if asset == "现金" else
+                      _target_a_c(st["exposure"], asset))
             gate = "开启" if st["trend_gate_on"] else "关闭"
-            rationale = (f"SMA200 闸门{gate}；实现波动 {st['realized_vol']}% / 目标 {st['target_vol']}%"
-                         f"，信号日 {st['as_of']}")
+            rv = f"{st['realized_vol']}%" if st.get("realized_vol") is not None else "暂无"
+            rationale = (f"SMA{st.get('trend_window', 200)} 闸门{gate}；当前选择 {asset}；"
+                         f"实现波动 {rv} / 目标 {st['target_vol']}%，信号日 {st['as_of']}")
 
         cur = {k: float(v) for k, v in holdings.get(sid, {}).items()}
         actions = _diff_actions(cur, target)
         _attach_snapshots(actions)
         trade = _needs_trade(actions)
 
+        # 三个市场均以 engine 实际动态池为唯一事实来源；B 额外允许系统防御资产。
+        pool_meta = list(data[sid].get("pool", []))
+        if sid == "B" and data[sid].get("safe_asset"):
+            pool_meta.append(data[sid]["safe_asset"])
+        pool_labels = [item.get("etf") for item in pool_meta if item.get("etf")]
+        pool = []
+        for meta in pool_meta:
+            label = meta.get("etf")
+            ref = _asset_ref(label) if label else None
+            if not ref:
+                continue
+            quote_error = None
+            try:
+                snap = wl_mod.snapshot_one(ref)
+            except Exception as exc:  # noqa: BLE001 — 单个标的行情失败不拖垮计划
+                snap = None
+                quote_error = str(exc)[:180]
+            pool.append({"asset": label, "ref": ref, "snap": snap,
+                         "quote_error": quote_error,
+                         "quote_source": snap.get("source") if snap else None,
+                         "quote_level": snap.get("quote_level") if snap else None,
+                         "above_ma": meta.get("above_ma"),
+                         "momentum_score": meta.get("momentum_score")})
+
+        active = set(pool_labels) | {"现金"}
+        legacy_holdings = [{"asset": k, "weight": float(v)} for k, v in cur.items()
+                           if k not in active and float(v) > 0]
         headline = (
             f"{'按计划执行以下调仓' if trade else '持仓与目标一致，无需操作'}"
             f"（目标：{'、'.join(f'{k} {v:.0f}%' for k, v in target.items() if v > 0)}）"
@@ -220,6 +279,8 @@ def build_plan(data: dict, holdings: dict | None = None) -> dict:
             "rationale": rationale,
             "target": target,
             "actions": actions,
+            "pool": pool,
+            "legacy_holdings": legacy_holdings,
             "headline": headline,
             "trade_needed": trade,
         }

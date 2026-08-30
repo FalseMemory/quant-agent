@@ -220,6 +220,9 @@ def rot_signal_b(
     for t, wrow in picks_by_date.items():
         pos = closes.index.searchsorted(t)
         exec_idx = closes.index[min(pos + 1, len(closes) - 1)]
+        # BUGFIX: 每次切换必须先清空全部列，否则历史持仓会叠加成数倍杠杆
+        # （与 engine.build_strategy_b 同一处缺陷，2026-08-29 修复）
+        weights.loc[exec_idx:, :] = 0.0
         for c, v in wrow.items():
             weights.loc[exec_idx:, c] = v
     return weights, decisions

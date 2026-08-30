@@ -1,0 +1,1 @@
+{'total_return': 82.1, 'cagr': 29.8, 'ann_vol': 3.2, 'sharpe': 7.95, 'max_dd': -25.9, 'calmar': 1.15, 'avg_exposure': None}

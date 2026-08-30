@@ -1,0 +1,26 @@
+{
+  "ext": {
+    "strategies": {
+      "us_qqq_vt": {
+        "enabled": false,
+        "params": {
+          "target_vol": 0.3
+        }
+      }
+    }
+  },
+  "core": {
+    "params_a": {
+      "target_vol": 0.44,
+      "trend_window": 175
+    },
+    "params_b": {
+      "mom_window": 120,
+      "ma_window": 60
+    },
+    "params_c": {
+      "target_vol": 0.4,
+      "trend_window": 200
+    }
+  }
+}

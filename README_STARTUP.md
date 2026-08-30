@@ -20,8 +20,8 @@ quant-agent\
 ├─ backend\           ← 策略 / 行情 / AI 决策逻辑
 ├─ static\            ← 前端页面
 ├─ data_cache\        ← 行情缓存 + AI 配置 + 决策审计数据库
-├─ holdings.json      ← 持仓配置
-└─ watchlist.json     ← 自选观察列表
+├─ strategy_settings.json ← A/B/C 参数与动态 ETF 候选池
+└─ holdings.json      ← 各市场持仓配置
 ```
 
 ---
@@ -92,16 +92,17 @@ python -m venv .venv
    - **API Base URL**（OpenAI 兼容接口，如 `https://api.deepseek.com/v1`）
    - **模型名**（如 `deepseek-chat`）
    - **API Key**
-   - 可保存多个命名模型配置（如“稳健模型”“反向审查模型”），生成指令时切换使用；
+   - 可新增、编辑、删除多个命名模型配置，并用配置组并行生成分析；编辑时 API Key 留空会沿用原值；
 3. 点击 **保存配置** → **测试连接**。
+4. 在交易计划 A/B/C 中维护各市场 1～10 只 ETF；名称可留空，系统会尝试自动识别。修改候选池或策略参数后点击“应用并重跑”。
 
 配置落盘位置：
 
 | 文件 | 内容 | 注意事项 |
 |---|---|---|
-| `data_cache/ai_config.json` | 模型配置（含 API Key） | 含密钥，备份时注意权限 |
-| `holdings.json` | 各策略持仓比例（含自选 ETF 的 WATCH 持仓） | — |
-| `watchlist.json` | 自选观察列表 | — |
+| `data_cache/ai_config.json` | 模型配置、配置组（含 API Key） | 含密钥，备份时注意权限 |
+| `strategy_settings.json` | A/B/C 候选池及策略参数 | 本地个性化配置 |
+| `holdings.json` | 各市场真实持仓比例及池外遗留持仓 | 本地个人数据 |
 
 ---
 
@@ -119,8 +120,8 @@ python -m venv .venv
 ```text
 data_cache/quant_agent.db      ← 决策审计（最核心）
 data_cache/ai_config.json      ← 模型配置（含密钥）
+strategy_settings.json         ← 动态 ETF 池与策略参数
 holdings.json                  ← 持仓
-watchlist.json                 ← 自选列表
 ```
 
 行情 CSV 缓存在 `data_cache/*.csv`，丢失后系统会自动重新拉取，无需备份。
@@ -134,7 +135,7 @@ watchlist.json                 ← 自选列表
 | 重启电脑后打不开面板 | 服务**不会开机自启**，重新双击 `start.bat` 即可 |
 | 提示端口被占用 | 双击 `stop.bat` 杀掉旧进程，或换端口 `start.bat 8700` |
 | `ModuleNotFoundError` | 依赖没装全：`python -m pip install -r requirements.txt` |
-| 行情拉取失败 / 数据为空 | 检查网络和代理；系统会自动在数据源间回退并在快照中标注来源 |
+| 行情拉取失败 / 数据为空 | 检查代码、网络和代理；美股按 Yahoo query1/query2 → 新浪 → Stooq，港股按 Yahoo query1/query2 → 腾讯回退，最后尝试过期缓存；单只失败原因会显示在交易计划中 |
 | AI 报鉴权错误 | 打开设置重新填写 API Key 并保存 |
 | 页面能开但没有策略数据 | 首次加载需拉取行情，等待片刻或点击强制刷新 |
 
