@@ -3,6 +3,13 @@
 
 const DATA = { A: null, B: null, C: null };
 let PLAN = null;
+let LOCAL_SETTINGS = null;
+let LOCAL_HOLDINGS = {};
+const LOCAL_DEFAULT_HOLDINGS = {
+  A: { TQQQ: 100 },
+  B: { "510880 红利ETF": 100 },
+  C: { "7200.HK": 100 },
+};
 const state = {
   A: { window: "full", charts: {} },
   B: { window: "full", charts: {} },
@@ -31,11 +38,20 @@ function fmt(v, suffix = "") {
 
 async function loadData(force = false) {
   try {
-    const r = await fetch(force ? "/api/summary?force=true" : "/api/summary");
+    LOCAL_SETTINGS = await BrowserStore.get("strategy-settings", null);
+    LOCAL_HOLDINGS = await BrowserStore.get("holdings", LOCAL_DEFAULT_HOLDINGS);
+    const endpoint = LOCAL_SETTINGS ? "/api/rerun" : (force ? "/api/summary?force=true" : "/api/summary");
+    const options = LOCAL_SETTINGS ? {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(LOCAL_SETTINGS),
+    } : undefined;
+    const r = await fetch(endpoint, options);
     const j = await r.json();
     if (!j.ok) throw new Error(j.error || "unknown");
     DATA.A = j.A; DATA.B = j.B; DATA.C = j.C;
-    restoreSettings(j.settings);
+    LOCAL_SETTINGS = j.settings;
+    if (!await BrowserStore.get("strategy-settings", null)) await BrowserStore.set("strategy-settings", j.settings);
+    restoreSettings(LOCAL_SETTINGS);
     document.getElementById("updated").textContent =
       `数据截至 ${DATA.A.current.as_of} (美) / ${DATA.B.current.as_of} (A) / ${DATA.C.current.as_of} (港)`;
     renderAll();
@@ -228,11 +244,13 @@ function renderCurrent(sid, d) {
 /* ---------- trading plan ---------- */
 async function loadPlan() {
   try {
-    const [pr, hr] = await Promise.all([fetch("/api/plan"), fetch("/api/holdings")]);
-    const pj = await pr.json(), hj = await hr.json();
-    if (!pj.ok) throw new Error(pj.error || "plan failed");
-    PLAN = pj;
-    PLAN.savedHoldings = hj.holdings;
+    LOCAL_HOLDINGS = await BrowserStore.get("holdings", LOCAL_HOLDINGS || LOCAL_DEFAULT_HOLDINGS);
+    const pr = await fetch("/api/plan", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ holdings: LOCAL_HOLDINGS }) });
+    const pj = await pr.json();
+    if (!pr.ok || !pj.ok) throw new Error(pj.error || "plan failed");
+    PLAN = { ...pj, savedHoldings: LOCAL_HOLDINGS };
     renderPlan();
   } catch (e) { toast("计划加载失败: " + e.message); }
 }
@@ -382,19 +400,20 @@ async function saveHoldings(sid) {
     if (Object.values(holdings).reduce((sum, value) => sum + value, 0) <= 0)
       throw new Error("持仓比例合计必须大于 0");
     const saved = { ...(PLAN?.savedHoldings || {}), [sid]: holdings };
-    const r = await fetch("/api/holdings", { method: "POST",
+    const r = await fetch("/api/holdings/validate", { method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ holdings: saved }) });
-    const contentType = r.headers.get("content-type") || "";
-    const j = contentType.includes("application/json")
-      ? await r.json()
-      : { ok: false, error: (await r.text()).trim() || `HTTP ${r.status}` };
+    const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
-    PLAN.savedHoldings = j.holdings;
-    const pr = await fetch("/api/plan");
+    LOCAL_HOLDINGS = j.holdings;
+    await BrowserStore.set("holdings", LOCAL_HOLDINGS);
+    PLAN.savedHoldings = LOCAL_HOLDINGS;
+    const pr = await fetch("/api/plan", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ holdings: LOCAL_HOLDINGS }) });
     const pj = await pr.json();
     if (!pr.ok || !pj.ok) throw new Error(pj.error || "计划刷新失败");
-    PLAN = { ...pj, savedHoldings: j.holdings };
+    PLAN = { ...pj, savedHoldings: LOCAL_HOLDINGS };
     renderPlan();
     toast(`${sid} 持仓比例已保存，刷新后仍会保留`);
   } catch (e) {
@@ -469,8 +488,10 @@ async function savePool(sid, assets) {
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     DATA.A = j.A; DATA.B = j.B; DATA.C = j.C;
-    restoreSettings(j.settings); renderAll(); await loadPlan();
-    toast(`策略${sid}候选池已保存（${DATA[sid].pool.length}/10），推荐已更新`);
+    LOCAL_SETTINGS = j.settings;
+    await BrowserStore.set("strategy-settings", LOCAL_SETTINGS);
+    restoreSettings(LOCAL_SETTINGS); renderAll(); await loadPlan();
+    toast(`策略${sid}候选池已保存在本浏览器（${DATA[sid].pool.length}/10），推荐已更新`);
   } catch (e) { toast("候选池保存失败: " + e.message); }
 }
 
@@ -508,8 +529,10 @@ async function rerun(sid) {
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     DATA.A = j.A; DATA.B = j.B; DATA.C = j.C;
-    restoreSettings(j.settings);
-    renderAll(); loadPlan(); toast(`${sid} 参数已保存，刷新后仍会保留`);
+    LOCAL_SETTINGS = j.settings;
+    await BrowserStore.set("strategy-settings", LOCAL_SETTINGS);
+    restoreSettings(LOCAL_SETTINGS);
+    renderAll(); loadPlan(); toast(`${sid} 参数已保存在本浏览器，刷新后仍会保留`);
     if (state[sid].customStart) applyCustom(sid);   // 重跑后自动重算自定义区间
   } catch (e) {
     toast("保存失败: " + e.message);
@@ -565,17 +588,32 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+function refreshAiConfigView(activeProfile = "") {
+  const profiles = AICFG?.profiles || [];
+  const active = profiles.find(p => p.name === activeProfile) || profiles[0] || {};
+  AICFG = {
+    profile: active.name || "", group: active.group || "默认组",
+    base_url: active.base_url || "", model: active.model || "",
+    ready: Boolean(active.base_url && active.model && active.api_key), profiles,
+  };
+}
+
+async function persistAiProfiles(activeProfile = "") {
+  await BrowserStore.saveProfiles(AICFG?.profiles || [], activeProfile || AICFG?.profile || "");
+}
+
 async function initAi() {
   const chip = document.getElementById("aiChip");
   try {
-    const j = await (await fetch("/api/ai/config")).json();
-    AICFG = j;
+    const saved = await BrowserStore.loadProfiles();
+    AICFG = { profiles: saved.profiles };
+    refreshAiConfigView(saved.active_profile);
     updateAiChip();
-    if (!j.ready) document.getElementById("aiSettings").hidden = false;
+    if (!AICFG.ready) document.getElementById("aiSettings").hidden = false;
     renderProfileManager();
     renderGroupChips();
     loadAiHistory();
-  } catch (e) { chip.textContent = "配置接口异常"; }
+  } catch (e) { chip.textContent = "浏览器本地配置异常"; }
 }
 function updateAiChip() {
   const chip = document.getElementById("aiChip");
@@ -670,16 +708,14 @@ function cancelEditProfile() {
 async function deleteProfile(name) {
   if (!confirm(`确认删除模型配置「${name}」？此操作不可撤销。`)) return;
   try {
-    const j = await (await fetch("/api/ai/config/delete", { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile: name }) })).json();
-    if (!j.ok) throw new Error(j.error || "未知错误");
-    AICFG = j;
+    AICFG.profiles = (AICFG?.profiles || []).filter(p => p.name !== name);
+    refreshAiConfigView();
+    await persistAiProfiles(AICFG.profile);
     if (EDITING_PROFILE === name) cancelEditProfile();
     updateAiChip();
     renderProfileManager();
     renderGroupChips();
-    toast(`已删除配置「${name}」`);
+    toast(`已从本浏览器删除配置「${name}」`);
   } catch (e) { toast("删除失败：" + e.message); }
 }
 function toggleAiSettings() {
@@ -689,37 +725,34 @@ function toggleAiSettings() {
 async function saveAiConfig(silent = false) {
   const name = document.getElementById("ai_profile").value.trim();
   if (!name) { toast("请先填写配置名称"); return false; }
-  const body = {
-    base_url: document.getElementById("ai_base").value.trim(),
+  const existing = (AICFG?.profiles || []).find(p => p.name === EDITING_PROFILE || p.name === name);
+  const apiKey = document.getElementById("ai_key").value.trim() || existing?.api_key || "";
+  const profile = {
+    base_url: document.getElementById("ai_base").value.trim().replace(/\/$/, ""),
     model: document.getElementById("ai_model").value.trim(),
-    profile: name,
+    name,
     group: document.getElementById("ai_group").value.trim() || "默认组",
-    api_key: document.getElementById("ai_key").value.trim(),
-    original_name: (EDITING_PROFILE && EDITING_PROFILE !== name) ? EDITING_PROFILE : null,
+    api_key: apiKey,
   };
-  const r = await fetch("/api/ai/config", { method: "POST",
-    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const j = await r.json();
-  if (!j.ok) { toast("保存失败: " + j.error); return false; }
-  let renamed = false;
-  if (body.original_name) {   // rename = save new + remove old
-    try {
-      const d = await (await fetch("/api/ai/config/delete", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile: body.original_name }) })).json();
-      if (d.ok) { AICFG = d; renamed = true; }
-      else toast(`提示：旧配置「${body.original_name}」删除失败：${d.error}`);
-    } catch (e) { toast("提示：旧配置删除请求失败"); }
-  } else {
-    AICFG = j;
+  if (!profile.base_url.startsWith("http://") && !profile.base_url.startsWith("https://")) {
+    toast("保存失败: Base URL 必须以 http:// 或 https:// 开头"); return false;
   }
+  if (!profile.model || !profile.api_key) {
+    toast("保存失败: 模型名和 API Key 不能为空"); return false;
+  }
+  const renamed = Boolean(EDITING_PROFILE && EDITING_PROFILE !== name);
+  const profiles = (AICFG?.profiles || []).filter(p => p.name !== name && p.name !== EDITING_PROFILE);
+  profiles.unshift(profile);
+  AICFG = { profiles };
+  refreshAiConfigView(name);
+  await persistAiProfiles(name);
   EDITING_PROFILE = null;
   document.getElementById("ai_key").value = "";
   document.getElementById("aiProfileForm").hidden = true;
   updateAiChip();
   renderProfileManager();
   renderGroupChips();
-  if (!silent) toast(renamed ? `已保存并重命名为「${name}」` : `AI 配置「${name}」已保存`);
+  if (!silent) toast(renamed ? `已加密保存并重命名为「${name}」` : `AI 配置「${name}」已加密保存在本浏览器`);
   return true;
 }
 
@@ -735,7 +768,11 @@ async function testAi() {
     if (!okSaved) { el.textContent = "✗ 配置未保存，无法测试"; el.style.color = "var(--red)"; return; }
   }
   try {
-    const j = await (await fetch("/api/ai/test", { method: "POST" })).json();
+    const cfg = (AICFG?.profiles || []).find(p => p.name === AICFG.profile);
+    if (!cfg) throw new Error("找不到当前模型配置");
+    const j = await (await fetch("/api/ai/test", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: cfg }) })).json();
     if (j.ok) {
       el.textContent = `✓ 连接正常 · ${j.model} · ${j.elapsed_s}s · 回复「${j.reply}」`;
       el.style.color = "var(--green)";
@@ -859,8 +896,14 @@ async function runDecide() {
       markets, data_source: document.getElementById("ai_data_source").value,
       news_source: document.getElementById("ai_news_source").value, views
     };
-    if (nGroups > 0) payload.model_groups = [...SELECTED_GROUPS];
-    else payload.model_profile = (AICFG?.profile || "").trim() || null;
+    const profiles = (AICFG?.profiles || []).filter(p => p.ready);
+    if (nGroups > 0) payload.model_configs = profiles.filter(p => SELECTED_GROUPS.has(p.group || "默认组"));
+    else {
+      const active = profiles.find(p => p.name === AICFG.profile) || profiles[0];
+      if (!active) throw new Error("请先在设置中保存可用的模型配置");
+      payload.model_configs = [active];
+    }
+    payload.holdings = LOCAL_HOLDINGS;
     const r = await fetch("/api/ai/decide", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     const j = await r.json();
@@ -876,35 +919,43 @@ async function runDecide() {
       renderAiResult(j);
       toast("AI 指令已生成，请人工确认后执行");
     }
+    await saveAiHistoryResult(j);
     loadAiHistory();
   } catch (e) { showAiError("生成失败：" + e.message); }
   finally { btn.disabled = false; updateGoBtnLabel(); }
 }
 
+async function saveAiHistoryResult(result) {
+  const history = await BrowserStore.get("ai-history", []);
+  const items = result.multi ? result.results || [] : [result];
+  for (const item of items) history.unshift(item);
+  await BrowserStore.set("ai-history", history.slice(0, 50));
+}
+
 async function showHistory(id) {
   if (!id) return;
   try {
-    const j = await (await fetch("/api/ai/history/" + encodeURIComponent(id))).json();
-    if (!j.ok) throw new Error(j.error || "记录不存在");
-    const r = j.record;
-    const text = `决策 ${r.decision_id}\n生成时间: ${r.generated_at}\n市场: ${(r.selected_markets || []).join(",")}\n\n最终指令（含价格建议）:\n${JSON.stringify(r.result_json || {}, null, 2)}\n\n模型原文:\n${r.raw_response}\n\n上下文摘要:\n${JSON.stringify(r.request_context, null, 2)}`;
+    const history = await BrowserStore.get("ai-history", []);
+    const r = history.find(item => item.decision_id === id);
+    if (!r) throw new Error("记录不存在");
+    const text = `决策 ${r.decision_id}\n生成时间: ${r.generated_at}\n市场: ${(r.selected_markets || []).join(",")}\n\n最终指令（含价格建议）:\n${JSON.stringify(r, null, 2)}`;
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `decision_${r.decision_id}.txt`; a.click();
-    toast("已导出完整决策追溯记录");
+    toast("已导出本地决策记录");
   } catch (e) { toast("追溯失败：" + e.message); }
 }
 
 async function loadAiHistory() {
   const el = document.getElementById("aiHistory");
   try {
-    const j = await (await fetch("/api/ai/history")).json();
-    if (!j.history?.length) { el.innerHTML = '<span class="sub">暂无记录</span>'; return; }
+    const history = await BrowserStore.get("ai-history", []);
+    if (!history.length) { el.innerHTML = '<span class="sub">暂无本地记录</span>'; return; }
     el.innerHTML = "<table><tr><th>时间</th><th>市场</th><th>模型配置</th><th>模型</th><th>置信度</th><th>指令摘要</th><th></th></tr>" +
-      j.history.slice(0, 15).map(h => {
+      history.slice(0, 15).map(h => {
         const acts = (h.decisions || []).map(d => `${d.strategy}:${d.asset}${ACT_CN[d.action] || ""}${d.target_pct}%${d.price_mode === "market_open" ? "@开盘" : d.price_mode === "limit" ? `@${d.limit_price ?? `${d.limit_low ?? "?"}~${d.limit_high ?? "?"}`}` : ""}`).join("、") || "维持基线";
         return `<tr><td style="white-space:nowrap">${esc(h.generated_at)}</td><td>${esc((h.selected_markets || []).join("、"))}</td><td>${esc(h.model_profile || "默认")}</td><td>${esc(h.model)}</td><td>${esc(h.confidence)}</td><td>${esc(acts)}</td><td><button onclick="showHistory('${esc(h.decision_id)}')">追溯</button></td></tr>`;
       }).join("") + "</table>";
-  } catch (e) { el.innerHTML = '<span class="sub">历史加载失败</span>'; }
+  } catch (e) { el.innerHTML = '<span class="sub">本地历史加载失败</span>'; }
 }
 
 loadData();

@@ -13,6 +13,7 @@ from backend.engine import build_all
 from backend import engine
 from backend import advisor
 from backend import ai_advisor
+from backend import browser_ai
 from backend import settings_store
 from backend import ext_strategy
 from backend import watchlist
@@ -33,6 +34,11 @@ def _get_data(force: bool = False):
         except Exception as e:  # noqa: BLE001
             _STATE["error"] = str(e)[:300]
     return _STATE
+
+
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 
 @app.get("/api/summary")
@@ -61,7 +67,10 @@ class Params(BaseModel):
 @app.post("/api/rerun")
 def rerun(body: Params):
     previous = _current_settings()
-    candidate = {key: dict(value) for key, value in previous.items()}
+    candidate = {
+        key: settings_store.validate_params(key, value)
+        for key, value in previous.items()
+    }
     updates = {
         "params_a": body.params_a,
         "params_b": body.params_b,
@@ -77,22 +86,17 @@ def rerun(body: Params):
     # Blank names are resolved only after code validation. Manual names are preserved.
     candidate = watchlist.resolve_asset_names(candidate)
 
+    try:
+        data = build_all(candidate["params_a"], candidate["params_b"], candidate["params_c"])
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=500)
+    # Browser clients own persistence. Keep only the latest calculation in memory
+    # so custom-window requests can reuse RAW curves; never write user settings.
     for key, value in candidate.items():
         _STATE[key] = value
-    st = _get_data(force=True)
-    if st["error"]:
-        for key, value in previous.items():
-            _STATE[key] = value
-        _STATE["data"] = None
-        return JSONResponse({"ok": False, "error": st["error"]}, status_code=500)
-    try:
-        saved = settings_store.save_settings(candidate)
-    except (OSError, ValueError) as e:
-        for key, value in previous.items():
-            _STATE[key] = value
-        _STATE["data"] = None
-        return JSONResponse({"ok": False, "error": f"参数保存失败：{e}"}, status_code=500)
-    return {"ok": True, "settings": saved, **st["data"]}
+    _STATE["data"] = data
+    _STATE["error"] = None
+    return {"ok": True, "settings": candidate, **data}
 
 
 # ------------------- extended instrument groups & strategies -------------------
@@ -166,32 +170,29 @@ def custom(sid: str, start: str):
     return {"ok": True, "sid": sid, "payload": payload}
 
 
-@app.get("/api/plan")
-def plan(refresh_holdings_only: bool = False):
-    st = _get_data()
-    if st["error"]:
-        return JSONResponse({"ok": False, "error": st["error"]}, status_code=500)
-    return {"ok": True, **advisor.build_plan(st["data"])}
-
-
-@app.get("/api/holdings")
-def get_holdings():
-    return {"ok": True, "holdings": advisor.load_holdings()}
-
-
 class HoldingsBody(BaseModel):
     holdings: dict
 
 
-@app.post("/api/holdings")
-def post_holdings(body: HoldingsBody):
+@app.post("/api/plan")
+def plan(body: HoldingsBody):
+    st = _get_data()
+    if st["error"]:
+        return JSONResponse({"ok": False, "error": st["error"]}, status_code=500)
     try:
-        saved = advisor.save_holdings(body.holdings)
+        holdings = advisor.normalize_holdings(body.holdings)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-    except OSError as exc:
-        return JSONResponse({"ok": False, "error": f"持仓保存失败：{exc}"}, status_code=500)
-    return {"ok": True, "holdings": saved}
+    return {"ok": True, **advisor.build_plan(st["data"], holdings=holdings)}
+
+
+@app.post("/api/holdings/validate")
+def validate_holdings(body: HoldingsBody):
+    try:
+        clean = advisor.normalize_holdings(body.holdings)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return {"ok": True, "holdings": clean}
 
 
 # --------------------------- AI decision layer ---------------------------
@@ -236,14 +237,17 @@ def ai_config_delete(body: AiDeleteBody):
     return {"ok": True, **masked}
 
 
+class AiTestBody(BaseModel):
+    config: dict
+
+
 @app.post("/api/ai/test")
-def ai_test():
-    """Quick connectivity check against the configured LLM endpoint."""
-    cfg = ai_advisor.load_config()
-    if not (cfg["base_url"] and cfg["api_key"] and cfg["model"]):
-        return JSONResponse(
-            {"ok": False, "error": "请先填写并保存 base_url / API Key / 模型名"},
-            status_code=400)
+def ai_test(body: AiTestBody):
+    """Test a browser-supplied model config without persisting its API Key."""
+    try:
+        cfg = browser_ai.clean_config(body.config)
+    except ai_advisor.AIError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     t0 = time.time()
     try:
         raw = ai_advisor.call_llm(
@@ -277,7 +281,8 @@ class AiDecideBody(BaseModel):
     markets: list[str] | None = None
     model_profile: str | None = None
     profiles: list[str] | None = None       # explicit model names
-    model_groups: list[str] | None = None   # 配置组: every saved profile in these groups runs
+    model_groups: list[str] | None = None   # legacy local-server compatibility
+    model_configs: list[dict] | None = None # browser-owned configs, used once and never stored
     data_source: str = "auto"
     news_source: str = "sina"
     views: list[str] | None = None
@@ -290,10 +295,12 @@ def ai_decide(body: AiDecideBody):
         return JSONResponse({"ok": False, "error": st["error"]}, status_code=500)
     try:
         plan = advisor.build_plan(st["data"], holdings=body.holdings or None)
-        common = dict(holdings=body.holdings or advisor.load_holdings(),
-                      markets=body.markets, data_source=body.data_source,
-                      news_source=body.news_source, views=body.views)
-        if body.profiles or body.model_groups:
+        common = dict(holdings=body.holdings or {}, markets=body.markets,
+                      data_source=body.data_source, news_source=body.news_source,
+                      views=body.views)
+        if body.model_configs:
+            result = browser_ai.decide_many(st["data"], plan, body.model_configs, **common)
+        elif body.profiles or body.model_groups:
             result = ai_advisor.decide_multi(st["data"], plan, profiles=body.profiles,
                                              model_groups=body.model_groups, **common)
         else:
@@ -327,9 +334,10 @@ def index():
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 
 
-if __name__ == "__main__":  # allow: python app.py  (port via QUANT_AGENT_PORT env, default 8643)
+if __name__ == "__main__":  # local: QUANT_AGENT_PORT; CloudBase Run: PORT
     import os
 
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("QUANT_AGENT_PORT", "8643")))
+    port = int(os.environ.get("PORT") or os.environ.get("QUANT_AGENT_PORT", "8643"))
+    uvicorn.run(app, host="0.0.0.0", port=port)

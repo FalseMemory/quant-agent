@@ -1,0 +1,31 @@
+[Unit]
+Description=quant-agent multi-market quantitative dashboard
+Documentation=https://github.com/FalseMemory/quant-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/quant-agent
+
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=QUANT_AGENT_PORT=8643
+
+ExecStart=/home/ubuntu/quant-agent/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8643 --workers 1 --timeout-keep-alive 65
+
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=quant-agent
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

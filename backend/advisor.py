@@ -104,7 +104,8 @@ def load_holdings() -> dict:
     return json.loads(json.dumps(DEFAULT_HOLDINGS))  # deep copy
 
 
-def save_holdings(h: dict) -> dict:
+def normalize_holdings(h: dict) -> dict:
+    """Validate and normalize browser-owned holdings without writing to disk."""
     if not isinstance(h, dict):
         raise ValueError("持仓数据必须是对象")
     clean = {}
@@ -126,13 +127,17 @@ def save_holdings(h: dict) -> dict:
         if total > 0:  # normalize to 100 so inputs stay consistent
             vals = {k: round(v * 100.0 / total, 1) for k, v in vals.items()}
         clean[sid] = vals
+    return clean
+
+
+def save_holdings(h: dict) -> dict:
+    """Legacy local-only helper; cloud/browser APIs use normalize_holdings."""
+    clean = normalize_holdings(h)
     tmp = HOLDINGS_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         tmp.replace(HOLDINGS_FILE)
     except PermissionError:
-        # Windows may briefly lock the destination; direct overwrite is safe here
-        # because the complete JSON has already been written to the temp file.
         HOLDINGS_FILE.write_text(tmp.read_text(encoding="utf-8"), encoding="utf-8")
         try:
             tmp.unlink()

@@ -68,6 +68,49 @@ python -m venv .venv
 
 接口文档：`http://127.0.0.1:8643/docs`。
 
+## 线上部署（Oracle Cloud ARM）
+
+当前线上环境运行在 Oracle Cloud Always Free ARM 实例上，Nginx 反向代理 + systemd 守护：
+
+- 环境：`arm-free` · `VM.Standard.A1.Flex` · 2 OCPU / 12 GB · Ubuntu 24.04 · 大阪 `ap-osaka-1`
+- 访问地址：**https://140.83.85.141.nip.io/**
+- 后端：`uvicorn app:app` 监听 `127.0.0.1:8643`，由 `quant-agent.service` 托管，开机自启、异常自动重启
+- 入口：Nginx 监听 80/443，HTTP 自动 301 跳转 HTTPS，证书由 Let's Encrypt 签发并自动续期
+- 部署文件：`deploy/quant-agent.service`、`deploy/nginx-quant-agent.conf`
+
+> **务必使用 `https://` 访问。** 该域名下的明文 HTTP 在部分网络环境下会被干扰而连接失败；HTTPS 正常。同时浏览器本地加密（`crypto.subtle`）只在安全上下文可用，HTTP 下 AI 配置加密会失效。
+
+### 更新部署
+
+```bash
+# 本地打包上传（排除本地个人数据）
+tar czf - --exclude='.git' --exclude='data_cache' --exclude='reports' \
+  --exclude='__pycache__' --exclude='holdings.json' \
+  --exclude='strategy_settings.json' --exclude='watchlist.json' . \
+  | ssh ubuntu@140.83.85.141 "tar xzf - -C ~/quant-agent"
+
+# 服务器重启服务
+ssh ubuntu@140.83.85.141 "sudo systemctl restart quant-agent"
+```
+
+### 排障备忘
+
+- **80/443 不通先查 iptables 规则顺序**：Oracle Ubuntu 镜像的 INPUT 链末尾有 `REJECT --reject-with icmp-host-prohibited` 兜底，放行规则必须插到它**之前**（`-I INPUT 5`），否则规则命中数为 0、完全不生效。
+- **同步检查 OCI 安全列表**：导航到 VCN → 子网 → Default Security List，确认入站放行 80/443。安全列表与实例 iptables 是两层独立过滤。
+- 查看日志：`sudo journalctl -u quant-agent -f`
+
+## CloudBase 部署
+
+项目根目录已提供 `Dockerfile` 和 `.dockerignore`，可部署为 CloudBase Run 容器服务。应用优先读取平台注入的 `PORT`，监听 `0.0.0.0`，并提供固定健康检查 `GET /health`。
+
+当前演示环境：
+
+- 环境：`workbuddy-d1gigjjuj39eebcf6`
+- 服务：`quant-agent`
+- 地址：`https://quant-agent-305439-11-1300662093.sh.run.tcloudbase.com/`
+
+云端版本不使用容器文件保存个人数据：ETF 池、策略参数、持仓和 AI 决策历史保存在当前浏览器的 IndexedDB；API Key 使用 Web Crypto AES-GCM 加密，设备密钥以不可导出 `CryptoKey` 形式保存在同源 IndexedDB，刷新后自动解锁。后端仅在单次 HTTPS 请求中使用 Key，不写 AI 配置、持仓、参数或审计文件。清除站点数据、无痕模式关闭或更换浏览器/设备后不会自动恢复；该方案仍不能抵御 XSS、恶意扩展或已被控制的终端。
+
 ## 测试与 Allure
 
 ```bash

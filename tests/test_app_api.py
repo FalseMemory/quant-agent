@@ -13,6 +13,14 @@ from conftest import phased_frame, synth_frame
 
 # --------------------------------------------------------------------------- 核心接口
 @allure.feature("接口")
+@allure.story("健康检查")
+def test_health_returns_fixed_safe_payload(client):
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+
+@allure.feature("接口")
 @allure.story("核心摘要")
 def test_summary_returns_three_strategies_and_settings(client):
     r = client.get("/api/summary")
@@ -39,7 +47,7 @@ def test_summary_b_exposure_reflects_fixed_single_position(client):
 
 @allure.feature("接口")
 @allure.story("核心重跑")
-def test_rerun_accepts_valid_params_and_persists(client, tmp_settings_file):
+def test_rerun_accepts_valid_params_without_server_persistence(client, tmp_settings_file):
     import json
 
     r = client.post("/api/rerun", json={
@@ -56,8 +64,7 @@ def test_rerun_accepts_valid_params_and_persists(client, tmp_settings_file):
     assert body["settings"]["params_c"]["target_vol"] == 0.40
     assert body["settings"]["params_c"]["trend_window"] == 200
     assert body["settings"]["params_c"]["assets"], "修改 A 不应覆盖 C 的候选池"
-    saved = json.loads(tmp_settings_file.read_text(encoding="utf-8"))
-    assert saved["params_a"]["trend_window"] == 190
+    assert not tmp_settings_file.exists(), "浏览器策略参数不得写入服务器文件"
 
 
 @allure.feature("接口")
@@ -173,38 +180,25 @@ def test_ext_rerun_disable_marks_disabled(client, tmp_settings_file):
 
 
 @allure.feature("接口")
-@allure.story("持仓")
-def test_holdings_roundtrip(client, tmp_settings_file, monkeypatch):
+@allure.story("浏览器持仓")
+def test_holdings_validation_is_stateless(client, tmp_settings_file, monkeypatch):
     from backend import advisor
 
-    monkeypatch.setattr(advisor, "HOLDINGS_FILE",
-                        tmp_settings_file.parent / "holdings.json")
-    r = client.post("/api/holdings", json={"holdings": {"A": {"TQQQ": 60, "现金": 40}}})
+    target = tmp_settings_file.parent / "holdings.json"
+    monkeypatch.setattr(advisor, "HOLDINGS_FILE", target)
+    r = client.post("/api/holdings/validate", json={
+        "holdings": {"A": {"TQQQ": 60, "现金": 40}}})
 
     assert r.status_code == 200
-    assert client.get("/api/holdings").json()["holdings"]["A"]["TQQQ"] == 60
+    assert r.json()["holdings"]["A"]["TQQQ"] == 60
+    assert not target.exists(), "浏览器持仓校验不得写入服务器文件"
 
 
 @allure.feature("接口")
-@allure.story("持仓")
-def test_holdings_returns_json_error_instead_of_plain_500(client, monkeypatch):
-    from backend import advisor
-
-    def locked(_holdings):
-        raise PermissionError("文件被占用")
-
-    monkeypatch.setattr(advisor, "save_holdings", locked)
-    r = client.post("/api/holdings", json={"holdings": {"A": {"TQQQ": 50, "现金": 50}}})
-
-    assert r.status_code == 500
-    assert r.headers["content-type"].startswith("application/json")
-    assert r.json() == {"ok": False, "error": "持仓保存失败：文件被占用"}
-
-
-@allure.feature("接口")
-@allure.story("持仓")
+@allure.story("浏览器持仓")
 def test_holdings_rejects_non_numeric_weight_with_json_400(client):
-    r = client.post("/api/holdings", json={"holdings": {"A": {"TQQQ": "非法"}}})
+    r = client.post("/api/holdings/validate", json={
+        "holdings": {"A": {"TQQQ": "非法"}}})
 
     assert r.status_code == 400
     assert r.headers["content-type"].startswith("application/json")

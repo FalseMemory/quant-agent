@@ -639,8 +639,8 @@ def _resolve_profile_cfg(profile_name: str | None) -> dict:
     return cfg
 
 
-def _run_llm_pipeline(ctx: dict, cfg: dict) -> dict:
-    """One LLM decision against a prepared context; persists its own audit row."""
+def _run_llm_pipeline(ctx: dict, cfg: dict, *, persist_audit: bool = True) -> dict:
+    """Run one LLM decision; browser mode disables server-side audit writes."""
     messages = _build_messages(ctx)
     t0 = time.time()
     raw = call_llm(cfg, messages)
@@ -668,18 +668,23 @@ def _run_llm_pipeline(ctx: dict, cfg: dict) -> dict:
         "sessions": ctx["sessions"],
         "news_count": len(ctx["news_recent"]),
     }
-    append_history(result, context=ctx, raw_response=raw, parsed=parsed)
+    if persist_audit:
+        append_history(result, context=ctx, raw_response=raw, parsed=parsed)
     return result
 
 
 def decide(summary: dict, plan_payload: dict, holdings: dict | None = None,
            markets: list[str] | None = None, model_profile: str | None = None,
            data_source: str = "auto", news_source: str = "sina",
-           views: list[str] | None = None) -> dict:
-    cfg = _resolve_profile_cfg(model_profile)
+           views: list[str] | None = None, config: dict | None = None,
+           persist_audit: bool = True) -> dict:
+    cfg = dict(config) if config is not None else _resolve_profile_cfg(model_profile)
+    if not (cfg.get("base_url") and cfg.get("api_key") and cfg.get("model")):
+        raise AIError("模型配置不完整：缺少 base_url / API Key / 模型名")
+    cfg.setdefault("profile", cfg.get("name") or model_profile or "默认模型")
     ctx = build_context(summary, plan_payload, holdings, markets=markets,
                         data_source=data_source, news_source=news_source, views=views)
-    return _run_llm_pipeline(ctx, cfg)
+    return _run_llm_pipeline(ctx, cfg, persist_audit=persist_audit)
 
 
 def _expand_groups(model_groups: list[str] | None) -> list[str]:
