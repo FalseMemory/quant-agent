@@ -1,6 +1,8 @@
 """FastAPI app serving the quant-agent dashboard."""
 from __future__ import annotations
 
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -23,6 +25,19 @@ ROOT = Path(__file__).resolve().parent
 app = FastAPI(title="Quant Agent")
 
 _SAVED_PARAMS = settings_store.load_settings()
+
+# Resolve genuine security names once at boot so the very first page load shows
+# "TQQQ 3倍做多纳斯达克100ETF" instead of repeating the code. Skipped under
+# pytest (keeps the suite offline and deterministic); set
+# QUANT_AGENT_RESOLVE_NAMES=0 to disable it elsewhere.
+if "pytest" not in sys.modules and os.environ.get(
+    "QUANT_AGENT_RESOLVE_NAMES", "1"
+) == "1":
+    try:
+        _SAVED_PARAMS = watchlist.resolve_asset_names(_SAVED_PARAMS)
+    except Exception:  # noqa: BLE001
+        pass
+
 _STATE: dict = {"data": None, **_SAVED_PARAMS, "error": None}
 
 
