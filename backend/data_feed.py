@@ -2,14 +2,32 @@
 Data feed layer: free sources, no API keys.
 - US/HK daily kline: primary Yahoo Finance v8 chart; fallback Sina US daily
   (US tickers) / Tencent gtimg fqkline (.HK tickers).
-All series are cached to data_cache/ as CSV and re-used for 6h; if every live
-source fails, an EXPIRED cache is served as a last resort instead of raising.
+
+Two rules govern every series here:
+
+1. **Bars are labelled in the exchange's OWN local time.** Yahoo stamps daily
+   bars at the session open, so a HK bar arrives as 01:30 UTC (= 09:30 HKT).
+   Converting every market to America/New_York used to shift HK bars one
+   calendar day backwards, which made "as of" dates lie by a day.
+2. **An in-progress session is not a close.** Intraday, Yahoo already returns
+   today's bar with a live price in `close`. Feeding that into the backtest
+   makes signals drift with the tape, so the current session's bar is dropped
+   until the exchange's own closing time has passed.
+
+Caching: each series is written to data_cache/ as CSV. A cached file is reused
+only while it is still *current* — i.e. it was written after the market's most
+recent close. Once a session closes the next request refetches, so a refresh
+right after the bell picks up the new bar instead of waiting out a timer.
+`forcing(True)` bypasses the cache entirely. If every live source fails, an
+EXPIRED cache is served as a last resort instead of raising.
 """
 from __future__ import annotations
 
 import os
 import time
 import json
+import contextlib
+import contextvars
 import datetime as dt
 from pathlib import Path
 
@@ -19,15 +37,70 @@ import requests
 CACHE_DIR = Path(__file__).resolve().parent.parent / "data_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Bump whenever bar labelling or shaping changes. Cached CSVs written by an
+# older scheme carry the old semantics (e.g. HK dates shifted a day) and must be
+# discarded rather than replayed — otherwise a code fix appears to do nothing.
+CACHE_VERSION = "2"
+_version_ready: set[str] = set()
+
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": _UA})
 
-CACHE_TTL = 6 * 3600  # seconds
+# Per-market exchange timezone and regular-session close, in exchange local time.
+MARKETS: dict[str, dict] = {
+    "US": {"tz": "America/New_York", "close": dt.time(16, 0)},
+    "HK": {"tz": "Asia/Hong_Kong", "close": dt.time(16, 0)},
+    "CN": {"tz": "Asia/Shanghai", "close": dt.time(15, 0)},
+}
+
+_FORCE = contextvars.ContextVar("data_feed_force", default=False)
+
+
+@contextlib.contextmanager
+def forcing(flag: bool = True):
+    """Within this block every cache read is skipped, so data is refetched."""
+    token = _FORCE.set(flag)
+    try:
+        yield
+    finally:
+        _FORCE.reset(token)
+
+
+def market_of(symbol: str) -> str:
+    """.HK tickers trade in Hong Kong, everything else in the US."""
+    return "HK" if symbol.upper().endswith(".HK") else "US"
 
 
 def _cache_path(key: str) -> Path:
     return CACHE_DIR / f"{key}.csv"
+
+
+def _ensure_cache_version() -> None:
+    """Wipe caches left over from an older labelling/shaping scheme.
+
+    Cheap (runs once per directory) and keeps a fix from being swallowed by
+    stale files that still parse fine but mean something different.
+    """
+    root = str(CACHE_DIR)
+    if root in _version_ready:
+        return
+    _version_ready.add(root)
+    marker = CACHE_DIR / "_version"
+    try:
+        if marker.read_text(encoding="utf-8").strip() == CACHE_VERSION:
+            return
+    except OSError:
+        pass
+    for stale in CACHE_DIR.glob("*.csv"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    try:
+        marker.write_text(CACHE_VERSION, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _read_cache_csv(p: Path):
@@ -39,15 +112,87 @@ def _read_cache_csv(p: Path):
         return None
 
 
-def _load_cache(key: str):
+def _last_close_before(now_local: pd.Timestamp, market: str) -> pd.Timestamp:
+    """Most recent regular-session close at or before `now_local`.
+
+    Weekends are skipped; holidays are not modelled, which deliberately errs
+    toward refetching once after a holiday close closes (harmless) rather than
+    serving a stale series for days.
+    """
+    spec = MARKETS[market]
+    delta = pd.Timedelta(hours=spec["close"].hour, minutes=spec["close"].minute)
+    day = now_local.normalize()
+    close_today = day + delta
+    if day.weekday() < 5 and now_local >= close_today:
+        return close_today
+    day -= pd.Timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= pd.Timedelta(days=1)
+    return day + delta
+
+
+def _cache_is_current(p: Path, market: str,
+                      now: pd.Timestamp | None = None) -> bool:
+    """True when the cache was written after the market's latest close.
+
+    Replaces a fixed TTL: a timer cannot know that a session just ended, so it
+    either refetched too often or kept serving yesterday's bar all evening.
+    """
+    spec = MARKETS[market]
+    now_local = now if now is not None else pd.Timestamp.now(tz=spec["tz"])
+    written = pd.Timestamp(
+        dt.datetime.fromtimestamp(p.stat().st_mtime, tz=dt.timezone.utc)
+    ).tz_convert(spec["tz"])
+    return written >= _last_close_before(now_local, market)
+
+
+def _load_cache(key: str, market: str):
+    _ensure_cache_version()
     p = _cache_path(key)
-    if p.exists() and (time.time() - p.stat().st_mtime) < CACHE_TTL:
+    if not p.exists():
+        return None
+    if _FORCE.get():
+        return None
+    if _cache_is_current(p, market):
         return _read_cache_csv(p)
     return None
 
 
+def drop_incomplete_session(df: pd.DataFrame, market: str,
+                            now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Drop the last bar while its session is still trading.
+
+    Index is expected to be naive exchange-local timestamps.
+    """
+    if df.empty:
+        return df
+    spec = MARKETS[market]
+    now_local = (now if now is not None else pd.Timestamp.now(tz=spec["tz"])).tz_localize(None)
+    if df.index[-1].normalize() == now_local.normalize() and now_local.time() < spec["close"]:
+        return df.iloc[:-1]
+    return df
+
+
+def _covers_latest_close(df: pd.DataFrame, market: str,
+                         now: pd.Timestamp | None = None) -> bool:
+    """Does the series reach the market's most recent closed session?
+
+    "Has data" is not enough to accept a source. Yahoo occasionally returns a
+    whole row as null — HK 2026-10-07 came back with close=None — and since
+    nulls are dropped, the series just silently ends a day early. Comparing the
+    last bar against the latest close catches that, and lets the next source in
+    the chain fill the hole.
+    """
+    if df is None or df.empty:
+        return False
+    spec = MARKETS[market]
+    now_local = now if now is not None else pd.Timestamp.now(tz=spec["tz"])
+    return df.index[-1].date() >= _last_close_before(now_local, market).date()
+
+
 def _load_stale_cache(key: str):
     """Load cache regardless of TTL — last-resort fallback when all live sources fail."""
+    _ensure_cache_version()
     p = _cache_path(key)
     if p.exists():
         return _read_cache_csv(p)
@@ -55,6 +200,7 @@ def _load_stale_cache(key: str):
 
 
 def _save_cache(key: str, df: pd.DataFrame):
+    _ensure_cache_version()
     p = _cache_path(key)
     df.to_csv(p)
 
@@ -86,7 +232,11 @@ def _yahoo_chart_host(symbol: str, period: str, host: str) -> pd.DataFrame:
         "close": q["close"],
         "volume": q["volume"],
     }, index=pd.to_datetime(ts, unit="s", utc=True))
-    df = df[~df["close"].isna()].tz_convert("America/New_York").tz_localize(None)
+    # Label bars in the exchange's own timezone. Using a single timezone for all
+    # markets shifted HK bars back by one calendar day (09:30 HKT showed up as
+    # the previous evening in New York), which corrupted every "as of" date.
+    tz = MARKETS[market_of(symbol)]["tz"]
+    df = df[~df["close"].isna()].tz_convert(tz).tz_localize(None)
     return df[["open", "high", "low", "close", "volume"]]
 
 
@@ -196,18 +346,37 @@ def get_us(symbol: str, interval: str = "1d", period: str = "5y") -> pd.DataFram
     period like 1y/3y/5y/10y. Fallback mirrors cover 1d only; other intervals
     stay Yahoo-only. If everything fails, serve an expired cached copy."""
     key = f"us_{symbol}_{interval}_{period}"
-    cached = _load_cache(key)
+    market = market_of(symbol)
+    cached = _load_cache(key, market)
     if cached is not None:
         return cached
 
     df, errors = None, []
+    fallback = None  # first non-empty result, used when no source reaches the latest close
     sources = [_yahoo_chart] if interval != "1d" else _us_sources(symbol)
     for src in sources:
         try:
-            df = src(symbol, period)
-            break
+            frame = src(symbol, period)
         except Exception as e:  # noqa: BLE001
             errors.append(f"{src.__name__}: {type(e).__name__} {str(e)[:80]}")
+            continue
+        if frame is None or frame.empty:
+            errors.append(f"{src.__name__}: empty")
+            continue
+        if interval == "1d":
+            frame = drop_incomplete_session(frame, market)
+            if frame.empty:
+                errors.append(f"{src.__name__}: empty after dropping live bar")
+                continue
+        if fallback is None:
+            fallback = frame
+        # Keep moving down the chain only while the data is behind; a source that
+        # already reaches the latest close ends the search with no extra requests.
+        if interval != "1d" or _covers_latest_close(frame, market):
+            df = frame
+            break
+    if df is None:
+        df = fallback
     if df is None or df.empty:
         stale = _load_stale_cache(key)
         if stale is not None:
@@ -230,7 +399,7 @@ def get_a(code: str, start: str = "20180101", end: str | None = None) -> pd.Data
     Sina returns up to 2000 daily bars (scale=240)."""
     start_dt = pd.to_datetime(start)
     key = f"a_{code}_{start}_{end or 'now'}"
-    cached = _load_cache(key)
+    cached = _load_cache(key, "CN")
     if cached is not None:
         return cached
     url = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
@@ -269,6 +438,9 @@ def get_a(code: str, start: str = "20180101", end: str | None = None) -> pd.Data
     df = df[~df.index.duplicated(keep="last")].sort_index()
     if len(df) == 0:
         raise RuntimeError(f"get_a({code}) empty after merge")
+    # Sina normally withholds the live session, but guard anyway: the A-share
+    # decision is made on closes, never on an unfinished bar.
+    df = drop_incomplete_session(df, "CN")
     df = df[df.index >= start_dt]
     if end:
         df = df[df.index <= pd.to_datetime(end)]

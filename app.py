@@ -16,6 +16,7 @@ from backend import engine
 from backend import advisor
 from backend import ai_advisor
 from backend import browser_ai
+from backend import data_feed
 from backend import settings_store
 from backend import ext_strategy
 from backend import watchlist
@@ -44,7 +45,10 @@ _STATE: dict = {"data": None, **_SAVED_PARAMS, "error": None}
 def _get_data(force: bool = False):
     if force or _STATE["data"] is None:
         try:
-            _STATE["data"] = build_all(_STATE["params_a"], _STATE["params_b"], _STATE["params_c"])
+            # force reaches the data layer too, so an explicit refresh also
+            # re-downloads series instead of replaying today's cached CSVs.
+            with data_feed.forcing(force):
+                _STATE["data"] = build_all(_STATE["params_a"], _STATE["params_b"], _STATE["params_c"])
             _STATE["error"] = None
         except Exception as e:  # noqa: BLE001
             _STATE["error"] = str(e)[:300]
@@ -77,6 +81,7 @@ class Params(BaseModel):
     params_a: dict | None = None
     params_b: dict | None = None
     params_c: dict | None = None
+    refresh: bool = False  # set by the "刷新数据" button to bypass cached series
 
 
 @app.post("/api/rerun")
@@ -102,7 +107,8 @@ def rerun(body: Params):
     candidate = watchlist.resolve_asset_names(candidate)
 
     try:
-        data = build_all(candidate["params_a"], candidate["params_b"], candidate["params_c"])
+        with data_feed.forcing(body.refresh):
+            data = build_all(candidate["params_a"], candidate["params_b"], candidate["params_c"])
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"ok": False, "error": str(e)[:300]}, status_code=500)
     # Browser clients own persistence. Keep only the latest calculation in memory
@@ -122,7 +128,8 @@ _EXT_STATE: dict = {"data": None}
 
 def _get_ext_data(force: bool = False):
     if force or _EXT_STATE["data"] is None:
-        _EXT_STATE["data"] = ext_strategy.build_all_ext(settings_store.load_ext_settings())
+        with data_feed.forcing(force):
+            _EXT_STATE["data"] = ext_strategy.build_all_ext(settings_store.load_ext_settings())
     return _EXT_STATE["data"]
 
 

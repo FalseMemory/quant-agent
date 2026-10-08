@@ -37,13 +37,18 @@ function fmt(v, suffix = "") {
 }
 
 async function loadData(force = false) {
+  const btn = document.getElementById("refreshBtn");
+  if (force && btn) { btn.disabled = true; btn.textContent = "刷新中…"; }
   try {
     LOCAL_SETTINGS = await BrowserStore.get("strategy-settings", null);
     LOCAL_HOLDINGS = await BrowserStore.get("holdings", LOCAL_DEFAULT_HOLDINGS);
     const endpoint = LOCAL_SETTINGS ? "/api/rerun" : (force ? "/api/summary?force=true" : "/api/summary");
     const options = LOCAL_SETTINGS ? {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(LOCAL_SETTINGS),
+      // `refresh` must ride along with the stored settings — the rerun branch
+      // used to drop it, so 刷新数据 replayed the cached series instead of
+      // re-downloading them and the "数据截至" date never moved.
+      body: JSON.stringify({ ...LOCAL_SETTINGS, refresh: force }),
     } : undefined;
     const r = await fetch(endpoint, options);
     const j = await r.json();
@@ -56,8 +61,11 @@ async function loadData(force = false) {
       `数据截至 ${DATA.A.current.as_of} (美) / ${DATA.B.current.as_of} (A) / ${DATA.C.current.as_of} (港)`;
     renderAll();
     loadPlan();
+    if (force) toast("数据已刷新");
   } catch (e) {
     toast("加载失败: " + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "刷新数据"; }
   }
 }
 

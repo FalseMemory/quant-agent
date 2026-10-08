@@ -68,6 +68,83 @@ def test_rerun_accepts_valid_params_without_server_persistence(client, tmp_setti
 
 
 @allure.feature("接口")
+@allure.story("核心重跑")
+def test_rerun_refresh_flag_reaches_the_data_layer(client, monkeypatch):
+    """「刷新数据」的 refresh 必须一路传到数据层。
+
+    回归背景：缓存曾经只看 6 小时定时器，force 又传不下去，于是收盘后点刷新
+    只是回放旧 CSV，右上角日期纹丝不动。
+    """
+    import app as app_mod
+    from backend import data_feed as dfd
+
+    seen: list[bool] = []
+    original = app_mod.build_all
+
+    def spy(*args, **kwargs):
+        seen.append(dfd._FORCE.get())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(app_mod, "build_all", spy)
+
+    client.post("/api/rerun", json={"refresh": True})
+    client.post("/api/rerun", json={})
+
+    allure.attach(str(seen), "build_all 见到的 force 值", allure.attachment_type.TEXT)
+    assert seen[-2:] == [True, False], "refresh=true 应透传，缺省应保持 False"
+
+
+@allure.feature("接口")
+@allure.story("核心摘要")
+def test_summary_force_param_reaches_the_data_layer(client, monkeypatch):
+    import app as app_mod
+    from backend import data_feed as dfd
+
+    seen: list[bool] = []
+    original = app_mod.build_all
+
+    def spy(*args, **kwargs):
+        seen.append(dfd._FORCE.get())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(app_mod, "build_all", spy)
+
+    app_mod._STATE["data"] = None
+    client.get("/api/summary?force=true")
+    assert seen[-1] is True, "force=true 应透传到数据层"
+
+    app_mod._STATE["data"] = None
+    client.get("/api/summary")
+    assert seen[-1] is False, "普通加载不应强制重抓"
+
+
+@allure.feature("接口")
+@allure.story("核心摘要")
+def test_summary_force_param_invalidates_memory_cache(client, monkeypatch):
+    """不带 force 时命中内存缓存不重算；带 force 时必须重算。"""
+    import app as app_mod
+
+    calls: list[int] = []
+    original = app_mod.build_all
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(app_mod, "build_all", spy)
+    app_mod._STATE["data"] = None
+
+    client.get("/api/summary")
+    assert len(calls) == 1, "首次访问应构建"
+
+    client.get("/api/summary")
+    assert len(calls) == 1, "内存缓存命中时不应重复构建"
+
+    client.get("/api/summary?force=true")
+    assert len(calls) == 2, "force 应强制重建"
+
+
+@allure.feature("接口")
 @allure.story("ETF名称自动补全")
 def test_rerun_resolves_blank_name_and_preserves_manual_name(client, monkeypatch):
     from backend import watchlist

@@ -9,10 +9,12 @@ _summary_ref.json
 
 # Generated runtime/cache files
 data_cache/*.csv
+data_cache/_version
 *.log
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.tmp/
 
 # Local environments
 .venv/
